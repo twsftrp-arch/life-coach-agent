@@ -121,6 +121,10 @@ COACHING_STYLES: dict[str, dict[str, str]] = {
 }
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DB_PATH = Path(__file__).with_name("life_coach_sessions.db")
+GOALS_PATH = Path(__file__).with_name("goals") / "personal_goals.md"
+GOALS_MAX_CHARS = 20000
+GOALS_PREVIEW_CHARS = 600
+MAX_GOAL_SEARCH_CALLS_PER_MESSAGE = 2
 MOVIE_AGENT_ENV_PATH = Path.home() / "Documents" / "movie-agent" / ".env"
 KST = timezone(timedelta(hours=9), "KST")
 SEARCH_TIMINGS: contextvars.ContextVar[list[dict[str, object]] | None] = (
@@ -144,6 +148,12 @@ SEARCH_CALL_COUNT: contextvars.ContextVar[list[int] | None] = contextvars.Contex
     "SEARCH_CALL_COUNT",
     default=None,
 )
+GOALS_TIMINGS: contextvars.ContextVar[list[dict[str, object]] | None] = (
+    contextvars.ContextVar("GOALS_TIMINGS", default=None)
+)
+GOAL_SEARCH_CALL_COUNT: contextvars.ContextVar[list[int] | None] = (
+    contextvars.ContextVar("GOAL_SEARCH_CALL_COUNT", default=None)
+)
 STOP_EVENTS: dict[str, threading.Event] = {}
 WEB_SEARCH_HINTS = (
     "아침",
@@ -159,6 +169,9 @@ WEB_SEARCH_HINTS = (
     "수면",
     "생산성",
     "목표",
+    "운동",
+    "일기",
+    "진행",
     "팁",
     "방법",
     "조언",
@@ -227,27 +240,37 @@ Your job:
 """
 
 SEARCH_AGENT_INSTRUCTIONS = """
-You are a web-search planner for a Korean life coach.
+You are a research planner for a Korean life coach.
 
-Your only job:
-- Pick one focused search query for the user's motivation, habit, routine,
-  productivity, sleep, or self-development question.
-- Call search_web once. You may call it a second time only if it adds a clearly
-  different angle, such as practical Korean tips plus evidence-oriented English
-  sources.
-- After the tool result is returned, respond with only: SEARCH_DONE
+You may have up to two tools:
+- search_goals: search the user's personal goal and journal document.
+- search_web: search the public web for tips and evidence.
+
+Your job:
+- If the search_goals tool is available, call it FIRST to recall the user's
+  goals, plans, and past progress that are relevant to the question.
+- Then, when current or evidence-informed tips would help, call search_web
+  once. Call search_web a second time only for a clearly different angle, such
+  as practical Korean tips plus evidence-oriented English sources.
+- Do not repeat substantially similar searches.
+- After the tool results are returned, respond with only: SEARCH_DONE
 """
 
 STREAMING_COACH_INSTRUCTIONS = """
 You are a warm, practical life coach for Korean users.
 
-The app may provide web search results inside the user message. When search
-results are provided, use them as context and do not ask for another search.
+The app may provide the user's personal goal/journal excerpts and web search
+results inside the user message. When such context is provided, use it and do
+not ask for another search.
 
 Your job:
 - Encourage the user without exaggerating or sounding generic.
 - Give concrete advice about motivation, self-development, habits, routines,
   productivity, reflection, and goal setting.
+- When personal goal or journal context is provided, reference it directly:
+  compare the user's stated goals with their recent progress, acknowledge what
+  is going well, point out where they are slipping, and tailor next steps to
+  their situation. Track progress over time when journal dates are available.
 - Keep the response in Korean unless the user asks for another language.
 - Keep answers structured and actionable: empathize briefly, then give 3-5
   practical steps the user can try today.
@@ -1684,6 +1707,89 @@ def search_web(query: str) -> str:
     return output
 
 
+def _split_goal_chunks(text: str) -> list[str]:
+    """Split a goal/journal document into heading-based sections."""
+    chunks: list[str] = []
+    current: list[str] = []
+    for line in text.splitlines():
+        if line.lstrip().startswith("#") and any(c.strip() for c in current):
+            chunks.append("\n".join(current).strip())
+            current = [line]
+        else:
+            current.append(line)
+    if current:
+        chunks.append("\n".join(current).strip())
+    return [chunk for chunk in chunks if chunk.strip()]
+
+
+def search_goals_in_text(goals_text: str, query: str) -> str:
+    """Return the goal/journal sections most relevant to the query."""
+    clean = (goals_text or "").strip()
+    if not clean:
+        return (
+            "업로드된 개인 목표 문서가 없습니다. "
+            "사이드바에서 목표 파일을 올리면 검색할 수 있어요."
+        )
+
+    normalized_query = " ".join(query.split()).lower()
+    tokens = [token for token in normalized_query.split() if len(token) >= 2]
+
+    scored: list[tuple[int, str]] = []
+    for chunk in _split_goal_chunks(clean):
+        low = chunk.lower()
+        score = sum(low.count(token) for token in tokens)
+        if normalized_query and normalized_query in low:
+            score += 3
+        if score > 0:
+            scored.append((score, chunk))
+
+    if not scored:
+        return (
+            "질문과 정확히 일치하는 항목은 찾지 못했습니다. "
+            "참고용으로 목표 문서 일부를 제공합니다:\n\n" + clean[:1500]
+        )
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    top_chunks = [chunk for _, chunk in scored[:3]]
+    return "\n\n---\n\n".join(top_chunks)[:4000]
+
+
+def make_search_goals_tool(goals_text: str):
+    """Build a file-search tool bound to the current user's goal document."""
+
+    @function_tool
+    def search_goals(query: str) -> str:
+        """Search the user's personal goals and journal entries for relevant context."""
+        call_count = GOAL_SEARCH_CALL_COUNT.get()
+        if call_count is not None:
+            if call_count[0] >= MAX_GOAL_SEARCH_CALLS_PER_MESSAGE:
+                append_run_event(f"`search_goals` tool 추가 호출 차단: {query}")
+                return (
+                    "이미 개인 목표 문서를 충분히 확인했습니다. "
+                    "앞선 목표/기록 내용을 바탕으로 답변하세요."
+                )
+            call_count[0] += 1
+
+        started = time.perf_counter()
+        append_run_event(f"`search_goals` tool 호출: {query}")
+        output = search_goals_in_text(goals_text, query)
+        elapsed = time.perf_counter() - started
+        append_run_event(f"`search_goals` tool 완료: {format_seconds(elapsed)}")
+
+        timings = GOALS_TIMINGS.get()
+        if timings is not None:
+            timings.append(
+                {
+                    "query": query,
+                    "seconds": elapsed,
+                    "output": output,
+                }
+            )
+        return output
+
+    return search_goals
+
+
 def format_seconds(seconds: float | None) -> str:
     if seconds is None:
         return "unknown"
@@ -2130,6 +2236,9 @@ def render_run_evidence(evidence: dict[str, object] | None) -> None:
         summary_parts.append(str(thinking_mode))
     if evidence.get("total_seconds") is not None:
         summary_parts.append(f"총 {format_seconds(evidence.get('total_seconds'))}")
+    goal_searches = evidence.get("goal_searches")
+    if isinstance(goal_searches, list) and goal_searches:
+        summary_parts.append(f"개인 목표 검색 {len(goal_searches)}회")
     if actual_searches:
         summary_parts.append(
             f"웹 검색 {len(actual_searches)}회/{format_seconds(total_tool_seconds)}"
@@ -2219,13 +2328,22 @@ def build_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
     )
 
 
-def build_search_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
+def build_search_agent(
+    model: str,
+    api_key: str,
+    thinking_mode: str,
+    goals_text: str = "",
+) -> Agent:
+    tools = [search_web]
+    if goals_text and goals_text.strip():
+        # search_goals first so the planner recalls personal goals before the web.
+        tools = [make_search_goals_tool(goals_text), search_web]
     return Agent(
-        name="Life Coach Web Searcher",
+        name="Life Coach Researcher",
         model=build_openai_compatible_model(model, api_key),
         instructions=SEARCH_AGENT_INSTRUCTIONS,
         model_settings=build_model_settings(thinking_mode),
-        tools=[search_web],
+        tools=tools,
     )
 
 
@@ -2543,16 +2661,19 @@ def run_search_for_streaming_answer(
     started_at: float,
 ) -> tuple[str, dict[str, object], list[dict[str, object]]]:
     search_timings: list[dict[str, object]] = []
+    goal_timings: list[dict[str, object]] = []
     run_events: list[dict[str, object]] = []
     timing_token = SEARCH_TIMINGS.set(search_timings)
+    goals_token = GOALS_TIMINGS.set(goal_timings)
     events_token = RUN_EVENTS.set(run_events)
     started_token = RUN_STARTED_AT.set(started_at)
     renderer_token = RUN_EVENT_RENDERER.set(None)
     queue_token = RUN_EVENT_QUEUE.set(event_queue)
     search_count_token = SEARCH_CALL_COUNT.set([0])
+    goal_count_token = GOAL_SEARCH_CALL_COUNT.set([0])
 
     try:
-        append_run_event("자동 모드: 웹 검색 먼저 안정 실행")
+        append_run_event("자동 모드: 개인 목표/웹 검색 먼저 안정 실행")
         append_run_event("`Runner.run_sync()` 검색 단계 시작")
         search_session = SQLiteSession(
             f"life-coach-search-{uuid.uuid4().hex}",
@@ -2568,14 +2689,34 @@ def run_search_for_streaming_answer(
         append_run_event("`Runner.run_sync()` 검색 단계 완료")
         evidence["events"] = list(run_events)
         evidence = merge_search_timings(evidence, search_timings)
+        if goal_timings:
+            evidence["goal_searches"] = [
+                {
+                    "query": timing.get("query"),
+                    "seconds": timing.get("seconds"),
+                }
+                for timing in goal_timings
+            ]
 
-        search_context_parts = [
+        context_sections: list[str] = []
+        goal_parts = [
+            str(timing.get("output", ""))
+            for timing in goal_timings
+            if timing.get("output")
+        ]
+        if goal_parts:
+            context_sections.append("[개인 목표/기록]\n" + "\n\n".join(goal_parts))
+        web_parts = [
             str(timing.get("output", ""))
             for timing in search_timings
             if timing.get("output")
         ]
-        return "\n\n".join(search_context_parts), evidence, list(run_events)
+        if web_parts:
+            context_sections.append("[웹 검색 결과]\n" + "\n\n".join(web_parts))
+        return "\n\n".join(context_sections), evidence, list(run_events)
     finally:
+        GOAL_SEARCH_CALL_COUNT.reset(goal_count_token)
+        GOALS_TIMINGS.reset(goals_token)
         SEARCH_CALL_COUNT.reset(search_count_token)
         RUN_EVENT_QUEUE.reset(queue_token)
         RUN_EVENT_RENDERER.reset(renderer_token)
@@ -2886,6 +3027,105 @@ def render_shared_chat_page(share_token: str) -> None:
     st.markdown(f"[내 Life Coach 대화 시작하기](<{read_app_base_url()}>)")
 
 
+def load_default_goals_text() -> str:
+    try:
+        return GOALS_PATH.read_text(encoding="utf-8")[:GOALS_MAX_CHARS]
+    except OSError:
+        return ""
+
+
+def extract_uploaded_goal_text(uploaded_file) -> str:
+    name = (getattr(uploaded_file, "name", "") or "").lower()
+    # Streamlit UploadedFile exposes getvalue() and stays re-readable across
+    # reruns; fall back to read() only for plain file-like objects.
+    if hasattr(uploaded_file, "getvalue"):
+        data = uploaded_file.getvalue()
+    else:
+        data = uploaded_file.read()
+    if name.endswith(".pdf"):
+        try:
+            import io
+
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(data))
+            parts: list[str] = []
+            total = 0
+            for page in reader.pages:
+                text = page.extract_text() or ""
+                parts.append(text)
+                total += len(text)
+                if total >= GOALS_MAX_CHARS:
+                    break
+            return "\n\n".join(parts)[:GOALS_MAX_CHARS]
+        except Exception:
+            return ""
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="replace")[:GOALS_MAX_CHARS]
+    return str(data)[:GOALS_MAX_CHARS]
+
+
+def render_goals_panel() -> None:
+    with st.expander("개인 목표 파일", expanded=False):
+        st.caption(
+            "목표·일기 파일(TXT/Markdown/PDF)을 올리거나 샘플을 불러오면 코치가 "
+            "`search_goals` 도구로 내용을 참고해 답합니다. 로드하지 않으면 일반 "
+            "대화로 동작합니다."
+        )
+        nonce = int(st.session_state.get("goals_uploader_nonce", 0))
+        uploaded = st.file_uploader(
+            "목표 파일 업로드",
+            type=["txt", "md", "markdown", "pdf"],
+            key=f"goals-file-uploader-{nonce}",
+            label_visibility="collapsed",
+        )
+        if uploaded is not None:
+            extracted = extract_uploaded_goal_text(uploaded)
+            if extracted.strip():
+                st.session_state.goals_text = extracted
+                st.session_state.goals_source = f"업로드: {uploaded.name}"
+            else:
+                st.caption(
+                    "파일에서 텍스트를 추출하지 못했어요. PDF라면 텍스트형 PDF인지 "
+                    "확인하거나 TXT/Markdown으로 올려 주세요."
+                )
+
+        goals_text = str(st.session_state.get("goals_text") or "")
+        source = str(st.session_state.get("goals_source") or "")
+        if goals_text.strip():
+            st.caption(f"현재 목표 문서: {source} · {len(goals_text)}자")
+            preview = goals_text[:GOALS_PREVIEW_CHARS]
+            if len(goals_text) > GOALS_PREVIEW_CHARS:
+                preview += " ..."
+            st.text_area("목표 미리보기", value=preview, height=140, disabled=True)
+            if st.button(
+                "목표 문서 비우기", use_container_width=True, key="clear-goals"
+            ):
+                for key in ("goals_text", "goals_source"):
+                    if key in st.session_state:
+                        del st.session_state[key]
+                # rotate the uploader key so the previously uploaded file is
+                # dropped and does not silently reload after clearing.
+                st.session_state.goals_uploader_nonce = nonce + 1
+                st.rerun()
+        else:
+            st.caption("로드된 목표 문서가 없습니다. (일반 대화 모드)")
+            if st.button(
+                "샘플 목표 불러오기",
+                use_container_width=True,
+                key="load-sample-goals",
+            ):
+                default_text = load_default_goals_text()
+                if default_text.strip():
+                    st.session_state.goals_text = default_text
+                    st.session_state.goals_source = (
+                        "기본 샘플 (goals/personal_goals.md)"
+                    )
+                    st.rerun()
+                else:
+                    st.caption("샘플 목표 파일을 찾지 못했어요.")
+
+
 def render_coaching_preferences() -> None:
     user_id = current_auth_user_id()
     with st.expander("코칭 스타일", expanded=False):
@@ -2952,6 +3192,7 @@ def render_sidebar() -> None:
 
         render_auth_controls()
         render_coaching_preferences()
+        render_goals_panel()
 
         sidebar_status = str(st.session_state.get("supabase_status") or "")
         if any(marker in sidebar_status for marker in ("실패", "필요", "권한", "미설정")):
@@ -3135,9 +3376,10 @@ async def run_search_then_stream_answer(
 
     augmented_prompt = (
         f"{prompt}\n\n"
-        "[웹 검색 결과]\n"
-        f"{search_context or '검색 결과를 가져오지 못했습니다.'}\n\n"
-        "위 검색 결과를 바탕으로 사용자에게 바로 실행 가능한 라이프 코칭 답변을 해 주세요."
+        "[참고 자료]\n"
+        f"{search_context or '참고할 개인 목표/검색 결과를 가져오지 못했습니다.'}\n\n"
+        "위 개인 목표/기록과 검색 결과를 바탕으로, 사용자의 목표와 최근 진행 상황을 "
+        "반영해 바로 실행 가능한 라이프 코칭 답변을 해 주세요."
     )
 
     def render_activity(events: list[dict[str, object]]) -> None:
@@ -3382,7 +3624,10 @@ div[class*="st-key-stop-run-"] button:hover {
             st.warning(answer)
         return
 
-    needs_search = prompt_likely_needs_search(prompt)
+    goals_text = str(st.session_state.get("goals_text") or "")
+    # When a personal goal document is loaded, take the research path so the
+    # coach searches the goals (and the web) before answering.
+    needs_search = prompt_likely_needs_search(prompt) or bool(goals_text.strip())
     use_streaming = not needs_search
     stop_event = threading.Event()
     STOP_EVENTS[run_id] = stop_event
@@ -3442,7 +3687,9 @@ div[class*="st-key-stop-run-"] button:hover {
                     response_placeholder.markdown(answer)
                     status_placeholder.empty()
             else:
-                search_agent = build_search_agent(model, api_key, thinking_mode)
+                search_agent = build_search_agent(
+                    model, api_key, thinking_mode, goals_text=goals_text
+                )
                 answer_agent = build_streaming_coach_agent(model, api_key, thinking_mode)
                 answer, evidence = asyncio.run(
                     run_search_then_stream_answer(
