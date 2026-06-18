@@ -53,7 +53,7 @@ SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
 OAUTH_STATE_TTL_MINUTES = 10
-OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v6-url-clean-sessions"
+OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v7-explicit-oauth-state"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
@@ -1160,7 +1160,7 @@ def build_google_oauth_url() -> str | None:
 
     code_verifier = make_pkce_code_verifier()
     code_challenge = make_pkce_code_challenge(code_verifier)
-    supabase_store_oauth_state(chat_session_key, code_verifier)
+    oauth_state = supabase_store_oauth_state(chat_session_key, code_verifier)
     redirect_to = f"{read_app_base_url()}/?{urlencode({AUTH_CALLBACK_QUERY_PARAM: 'callback'})}"
     params = urlencode(
         {
@@ -1168,6 +1168,7 @@ def build_google_oauth_url() -> str | None:
             "redirect_to": redirect_to,
             "code_challenge": code_challenge,
             "code_challenge_method": "s256",
+            "state": oauth_state,
             "prompt": "select_account",
         }
     )
