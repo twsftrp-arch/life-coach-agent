@@ -4525,8 +4525,27 @@ a[href*="streamlit.io/"] {
   display: none !important;
   visibility: hidden !important;
 }
-[data-testid="stFileUploaderDropzoneInstructions"] {
+div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderDropzoneInstructions"] {
   display: none !important;
+}
+div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderDropzone"] {
+  align-items: stretch !important;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+}
+div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderDropzone"] > div {
+  width: 100% !important;
+}
+div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderDropzone"] button {
+  border-radius: 6px !important;
+  min-height: 2.35rem !important;
+  width: 100% !important;
+}
+div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
+  margin-top: 0.45rem !important;
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
