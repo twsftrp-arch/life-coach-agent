@@ -53,7 +53,7 @@ SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
 OAUTH_STATE_TTL_MINUTES = 10
-OAUTH_URL_CACHE_VERSION = "no-custom-state-v2"
+OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v3"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
@@ -484,8 +484,28 @@ def read_supabase_public_config() -> dict[str, str] | None:
     return {"url": url.rstrip("/"), "key": key}
 
 
+def read_context_base_url() -> str | None:
+    try:
+        current_url = st.context.url
+    except Exception:
+        current_url = None
+
+    if not current_url:
+        return None
+
+    parsed = urlparse(str(current_url))
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return None
+
+    return f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+
+
 def read_app_base_url() -> str:
-    return (read_config_value("APP_BASE_URL") or "http://localhost:8501").rstrip("/")
+    return (
+        read_context_base_url()
+        or read_config_value("APP_BASE_URL")
+        or "http://localhost:8501"
+    ).rstrip("/")
 
 
 def app_runs_on_https() -> bool:
