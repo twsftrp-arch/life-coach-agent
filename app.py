@@ -53,7 +53,7 @@ SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
 OAUTH_STATE_TTL_MINUTES = 10
-OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v5-clean-callback"
+OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v6-url-clean-sessions"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
@@ -737,21 +737,13 @@ def get_query_value(name: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def set_query_session_key(session_key: str) -> None:
-    try:
-        st.query_params[SESSION_QUERY_PARAM] = session_key
-    except Exception:
-        return
-
-
 def build_share_url(share_token: str) -> str:
     return f"{read_app_base_url()}/?{urlencode({SHARE_QUERY_PARAM: share_token})}"
 
 
-def clear_oauth_query_params(session_key: str) -> None:
+def clear_oauth_query_params() -> None:
     try:
         st.query_params.clear()
-        st.query_params[SESSION_QUERY_PARAM] = session_key
     except Exception:
         return
 
@@ -1169,8 +1161,7 @@ def handle_google_oauth_callback() -> bool:
                 + (f" ({error_description})" if error_description else "")
             )
         clear_cached_google_oauth_url()
-        if chat_session_key:
-            clear_oauth_query_params(chat_session_key)
+        clear_oauth_query_params()
         return True
 
     if not auth_code:
@@ -1197,7 +1188,11 @@ def handle_google_oauth_callback() -> bool:
             st.session_state.pending_auth_cookie_token = app_auth_token
         st.session_state.auth_status = "Google 로그인: 연결됨"
         st.session_state.chat_session_key = state_session_key
-        set_query_session_key(state_session_key)
+        st.session_state.session_id = state_session_key
+        st.session_state.agent_session = SQLiteSession(
+            st.session_state.session_id,
+            str(DB_PATH),
+        )
         supabase_attach_session_to_user(state_session_key, auth_user["id"])
         try:
             restored_messages = supabase_load_messages(state_session_key)
@@ -1207,13 +1202,12 @@ def handle_google_oauth_callback() -> bool:
             pass
         supabase_delete_oauth_states(state_session_key, state)
         clear_cached_google_oauth_url()
-        clear_oauth_query_params(state_session_key)
+        clear_oauth_query_params()
         return True
     except Exception as exc:
         st.session_state.auth_status = f"Google 로그인 실패: {exc.__class__.__name__}"
         clear_cached_google_oauth_url()
-        if chat_session_key:
-            clear_oauth_query_params(chat_session_key)
+        clear_oauth_query_params()
         return True
 
 
@@ -1410,7 +1404,6 @@ def supabase_load_messages(session_key: str) -> list[dict[str, object]]:
 
 def switch_conversation(session_key: str) -> None:
     st.session_state.chat_session_key = session_key
-    set_query_session_key(session_key)
     st.session_state.session_id = str(session_key)
     st.session_state.agent_session = SQLiteSession(
         st.session_state.session_id,
@@ -2813,7 +2806,6 @@ def prompt_likely_needs_search(prompt: str) -> bool:
 def initialize_state() -> None:
     if "chat_session_key" not in st.session_state:
         st.session_state.chat_session_key = get_query_session_key() or make_chat_session_key()
-        set_query_session_key(st.session_state.chat_session_key)
 
     if "session_id" not in st.session_state:
         st.session_state.session_id = str(st.session_state.chat_session_key)
@@ -2856,7 +2848,6 @@ def restore_messages_if_needed(force: bool = False) -> None:
 
 def reset_conversation() -> None:
     st.session_state.chat_session_key = make_chat_session_key()
-    set_query_session_key(st.session_state.chat_session_key)
     st.session_state.session_id = str(st.session_state.chat_session_key)
     st.session_state.agent_session = SQLiteSession(
         st.session_state.session_id,
