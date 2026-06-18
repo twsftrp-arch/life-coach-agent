@@ -153,6 +153,11 @@ IMAGE_REQUEST_HINTS = (
     "draw",
     "visual",
 )
+STARTER_PROMPTS: tuple[tuple[str, str], ...] = (
+    ("아침 루틴", "아침에 일찍 일어나고 싶은데 자꾸 알람을 끄게 돼"),
+    ("목표 기반 계획", "내 목표 파일을 기준으로 이번 주 실행 계획을 짜줘"),
+    ("비전보드", "내 올해 목표를 담은 비전보드를 만들어줘"),
+)
 MOVIE_AGENT_ENV_PATH = Path.home() / "Documents" / "movie-agent" / ".env"
 KST = timezone(timedelta(hours=9), "KST")
 SEARCH_TIMINGS: contextvars.ContextVar[list[dict[str, object]] | None] = (
@@ -2213,6 +2218,21 @@ def format_goal_document_timestamp(value: str) -> str:
         return value[:16].replace("T", " ")
 
 
+def format_file_size(size_bytes: object) -> str:
+    try:
+        size = float(size_bytes or 0)
+    except (TypeError, ValueError):
+        size = 0
+    units = ("B", "KB", "MB", "GB")
+    for unit in units:
+        if size < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(size)} {unit}"
+            return f"{size:.1f} {unit}"
+        size /= 1024
+    return "0 B"
+
+
 def restore_goal_document_if_possible() -> None:
     user_id = current_auth_user_id()
     if not user_id:
@@ -3075,28 +3095,25 @@ def render_run_evidence(evidence: dict[str, object] | None) -> None:
     else:
         mode_label = None
 
-    summary_parts = []
-    if display_model:
-        summary_parts.append(display_model)
-    if mode_label:
-        summary_parts.append(mode_label)
-    if thinking_mode:
-        summary_parts.append(str(thinking_mode))
-    if evidence.get("total_seconds") is not None:
-        summary_parts.append(f"총 {format_seconds(evidence.get('total_seconds'))}")
     goal_searches = evidence.get("goal_searches")
+    images = evidence.get("images")
+    summary_parts = []
     if isinstance(goal_searches, list) and goal_searches:
-        summary_parts.append(f"개인 목표 검색 {len(goal_searches)}회")
+        summary_parts.append("목표 파일 참조")
     if actual_searches:
-        summary_parts.append(
-            f"웹 검색 {len(actual_searches)}회/{format_seconds(total_tool_seconds)}"
-        )
+        summary_parts.append(f"웹 검색 {len(actual_searches)}회")
+    if isinstance(images, list) and images:
+        summary_parts.append(f"이미지 {len(images)}장")
+    if evidence.get("total_seconds") is not None:
+        summary_parts.append(f"{format_seconds(evidence.get('total_seconds'))}")
+    if display_model and not summary_parts:
+        summary_parts.append(display_model)
     if blocked_searches:
         summary_parts.append(f"추가 검색 차단 {len(blocked_searches)}회")
     if not summary_parts:
         summary_parts.append("상세 로그 저장됨")
 
-    st.caption(f"실행 확인: {' · '.join(summary_parts)}")
+    st.caption(f"응답 정보: {' · '.join(summary_parts)}")
 
     with st.expander("상세 실행 정보", expanded=False):
         detail_lines = ["**요약**"]
@@ -3656,7 +3673,6 @@ def render_auth_controls() -> None:
             clear_oauth_query_params()
             st.session_state.auth_status = "Google 로그아웃 완료"
             st.rerun()
-        render_user_session_list()
     else:
         try:
             login_url = build_google_oauth_url()
@@ -3689,34 +3705,6 @@ def render_share_controls(session_key: str, user_id: str) -> None:
         isinstance(message, dict) and message.get("role") == "user"
         for message in messages
     )
-    if not can_share:
-        st.button(
-            "공유 링크 만들기",
-            key=f"create-share-disabled-{session_key[-8:]}",
-            use_container_width=True,
-            disabled=True,
-        )
-        st.caption("대화를 시작하면 공유할 수 있어요.")
-        return
-
-    if st.button(
-        "공유 링크 만들기",
-        key=f"create-share-{session_key[-8:]}",
-        use_container_width=True,
-    ):
-        try:
-            share = supabase_create_shared_chat(session_key, user_id, messages)
-            share_url = share["url"]
-            st.session_state.share_status = "공유 링크가 준비됐어요."
-            st.session_state.share_status_session_key = session_key
-            st.session_state.latest_share_url = share_url
-            st.session_state.latest_share_token = share["share_token"]
-            st.session_state.latest_share_session_key = session_key
-        except Exception as exc:
-            st.session_state.share_status = (
-                f"공유 링크 생성 실패: {exc.__class__.__name__}"
-            )
-            st.session_state.share_status_session_key = session_key
 
     latest_share_session_key = str(
         st.session_state.get("latest_share_session_key") or ""
@@ -3754,6 +3742,16 @@ def render_share_controls(session_key: str, user_id: str) -> None:
                 featured_share_token = item_token
                 break
 
+    if not can_share:
+        st.button(
+            "현재 대화 공유",
+            key=f"create-share-disabled-{session_key[-8:]}",
+            use_container_width=True,
+            disabled=True,
+        )
+        st.caption("첫 메시지를 보낸 뒤 공유할 수 있어요.")
+        return
+
     share_status = (
         str(st.session_state.get("share_status") or "").strip()
         if st.session_state.get("share_status_session_key") == session_key
@@ -3766,41 +3764,59 @@ def render_share_controls(session_key: str, user_id: str) -> None:
             st.success(share_status)
 
     if featured_share_url:
-        with st.container(border=True):
-            st.markdown("**이 대화는 공유 중입니다.**")
-            st.text_input(
-                "공유 링크",
-                value=featured_share_url,
-                key=f"featured-share-url-{session_key[-8:]}",
-                label_visibility="collapsed",
+        st.markdown("**공유 링크**")
+        st.text_input(
+            "공유 링크",
+            value=featured_share_url,
+            key=f"featured-share-url-{session_key[-8:]}",
+            label_visibility="collapsed",
+        )
+        render_web_share_actions(
+            featured_share_url,
+            f"featured-share-{session_key[-8:]}",
+        )
+        if featured_share_token:
+            if st.button(
+                "공유 중지",
+                key=f"revoke-featured-share-{featured_share_token[-8:]}",
+                use_container_width=True,
+            ):
+                try:
+                    supabase_revoke_shared_chat(featured_share_token, user_id)
+                    st.session_state.share_status = "공유를 중지했어요."
+                    st.session_state.share_status_session_key = session_key
+                    for key in (
+                        "latest_share_url",
+                        "latest_share_token",
+                        "latest_share_session_key",
+                    ):
+                        if key in st.session_state:
+                            del st.session_state[key]
+                except Exception as exc:
+                    st.session_state.share_status = (
+                        f"공유 중지 실패: {exc.__class__.__name__}"
+                    )
+                    st.session_state.share_status_session_key = session_key
+                st.rerun()
+    elif st.button(
+        "현재 대화 공유",
+        key=f"create-share-{session_key[-8:]}",
+        use_container_width=True,
+    ):
+        try:
+            share = supabase_create_shared_chat(session_key, user_id, messages)
+            share_url = share["url"]
+            st.session_state.share_status = "공유 링크가 준비됐어요."
+            st.session_state.share_status_session_key = session_key
+            st.session_state.latest_share_url = share_url
+            st.session_state.latest_share_token = share["share_token"]
+            st.session_state.latest_share_session_key = session_key
+        except Exception as exc:
+            st.session_state.share_status = (
+                f"공유 링크 생성 실패: {exc.__class__.__name__}"
             )
-            render_web_share_actions(
-                featured_share_url,
-                f"featured-share-{session_key[-8:]}",
-            )
-            if featured_share_token:
-                if st.button(
-                    "공유 중지",
-                    key=f"revoke-featured-share-{featured_share_token[-8:]}",
-                    use_container_width=True,
-                ):
-                    try:
-                        supabase_revoke_shared_chat(featured_share_token, user_id)
-                        st.session_state.share_status = "공유를 중지했어요."
-                        st.session_state.share_status_session_key = session_key
-                        for key in (
-                            "latest_share_url",
-                            "latest_share_token",
-                            "latest_share_session_key",
-                        ):
-                            if key in st.session_state:
-                                del st.session_state[key]
-                    except Exception as exc:
-                        st.session_state.share_status = (
-                            f"공유 중지 실패: {exc.__class__.__name__}"
-                        )
-                        st.session_state.share_status_session_key = session_key
-                    st.rerun()
+            st.session_state.share_status_session_key = session_key
+        st.rerun()
 
     if not shares:
         return
@@ -3890,7 +3906,7 @@ def render_user_session_list() -> None:
             render_share_controls(session_key, user_id)
 
             manage_current = st.toggle(
-                "이름 변경·삭제",
+                "대화 관리",
                 key=f"manage-session-{session_key[-8:]}",
             )
             if manage_current:
@@ -3967,9 +3983,9 @@ def render_user_session_list() -> None:
             if str(item.get("session_key") or "").strip() != current_session_key
         ]
         st.divider()
-        st.caption("다른 대화 열기")
+        st.caption("이전 대화")
         if not other_sessions:
-            st.caption("다른 저장된 대화가 없습니다.")
+            st.caption("이전 대화가 없습니다.")
             return
 
         for index, item in enumerate(other_sessions):
@@ -4033,6 +4049,44 @@ def render_shared_chat_page(share_token: str) -> None:
     st.markdown(f"[내 Life Coach 대화 시작하기](<{read_app_base_url()}>)")
 
 
+def conversation_has_user_message() -> bool:
+    messages = st.session_state.get("messages") or []
+    if not isinstance(messages, list):
+        return False
+    return any(
+        isinstance(message, dict) and message.get("role") == "user"
+        for message in messages
+    )
+
+
+def queue_prompt_for_generation(prompt: str, model: str, thinking_mode: str) -> None:
+    clean_prompt = prompt.strip()
+    if not clean_prompt:
+        return
+    run_id = f"run-{uuid.uuid4().hex}"
+    st.session_state.messages.append({"role": "user", "content": clean_prompt})
+    persist_chat_message("user", clean_prompt)
+    st.session_state.pending_generation = {
+        "prompt": clean_prompt,
+        "run_id": run_id,
+        "model": model,
+        "thinking_mode": thinking_mode,
+        "goals_text": str(st.session_state.get("goals_text") or ""),
+    }
+    st.rerun()
+
+
+def render_starter_prompts(model: str, thinking_mode: str) -> None:
+    if conversation_has_user_message():
+        return
+    st.caption("바로 시작하기")
+    columns = st.columns(len(STARTER_PROMPTS), gap="small")
+    for index, ((label, prompt), column) in enumerate(zip(STARTER_PROMPTS, columns)):
+        with column:
+            if st.button(label, key=f"starter-prompt-{index}", use_container_width=True):
+                queue_prompt_for_generation(prompt, model, thinking_mode)
+
+
 def load_default_goals_text() -> str:
     try:
         return GOALS_PATH.read_text(encoding="utf-8")[:GOALS_MAX_CHARS]
@@ -4071,15 +4125,57 @@ def extract_uploaded_goal_text(uploaded_file) -> str:
 def render_goals_panel() -> None:
     with st.expander("개인 목표 파일", expanded=False):
         user_id = current_auth_user_id()
-        st.caption("목표 파일 1개 · 최대 10MB · TXT/MD/텍스트 PDF")
+        goals_text = str(st.session_state.get("goals_text") or "")
+        source = str(st.session_state.get("goals_source") or "")
+        goal_status = str(st.session_state.get("goal_status") or "").strip()
+        goal_meta = st.session_state.get("goal_document_meta")
+        goal_meta = goal_meta if isinstance(goal_meta, dict) else {}
+
+        if goals_text.strip():
+            filename = str(goal_meta.get("source_filename") or source or "목표 문서")
+            updated_at = format_goal_document_timestamp(
+                str(goal_meta.get("updated_at") or "")
+            )
+            size_label = (
+                format_file_size(goal_meta.get("source_size_bytes"))
+                if goal_meta.get("source_size_bytes")
+                else ""
+            )
+            meta_parts = [part for part in (size_label, updated_at) if part]
+            st.markdown(
+                f"""
+<div class="goal-file-card">
+  <div class="goal-file-card__label">현재 목표 파일</div>
+  <div class="goal-file-card__title">{html.escape(filename)}</div>
+  <div class="goal-file-card__meta">{html.escape(" · ".join(meta_parts))}</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.markdown(
+                """
+<div class="goal-file-card goal-file-card--empty">
+  <div class="goal-file-card__label">현재 목표 파일</div>
+  <div class="goal-file-card__title">아직 연결된 목표 파일이 없습니다.</div>
+  <div class="goal-file-card__meta">업로드하면 목표 기반 코칭에 사용됩니다.</div>
+</div>
+""",
+                unsafe_allow_html=True,
+            )
+
+        if goal_status and "없음" not in goal_status:
+            st.caption(goal_status)
+
         if user_id:
-            st.caption("업로드하면 계정에 저장되고, 새로고침·다른 기기에서도 복원됩니다.")
+            st.caption("로그인 계정에 저장됩니다. 새 파일을 올리면 기존 파일이 교체됩니다.")
         else:
             st.caption("로그인 전에는 현재 브라우저 세션에만 임시 적용됩니다.")
-        st.caption("스캔 PDF는 읽지 못합니다. OCR은 지원하지 않습니다.")
+        st.caption("TXT/MD/텍스트 PDF · 최대 10MB · OCR 미지원")
+
         nonce = int(st.session_state.get("goals_uploader_nonce", 0))
         uploaded = st.file_uploader(
-            "목표 파일 업로드",
+            "목표 파일 업로드 또는 교체",
             type=["txt", "md", "pdf"],
             key=f"goals-file-uploader-{nonce}",
             help="PDF는 텍스트 선택/복사가 가능한 파일만 읽습니다. OCR은 지원하지 않습니다.",
@@ -4128,22 +4224,18 @@ def render_goals_panel() -> None:
                 if status:
                     st.caption(str(status))
 
-        goals_text = str(st.session_state.get("goals_text") or "")
-        source = str(st.session_state.get("goals_source") or "")
-        goal_status = st.session_state.get("goal_status")
-        if goal_status:
-            st.caption(str(goal_status))
         if goals_text.strip():
-            st.caption(f"현재 목표 문서: {source} · {len(goals_text)}자")
             preview = goals_text[:GOALS_PREVIEW_CHARS]
             if len(goals_text) > GOALS_PREVIEW_CHARS:
                 preview += " ..."
-            st.text_area(
-                "읽어낸 내용 미리보기",
-                value=preview,
-                height=140,
-                disabled=True,
-            )
+            with st.expander("읽어낸 내용 미리보기", expanded=False):
+                st.text_area(
+                    "읽어낸 내용",
+                    value=preview,
+                    height=140,
+                    disabled=True,
+                    label_visibility="collapsed",
+                )
             clear_label = "저장된 목표 문서 삭제" if user_id else "목표 문서 비우기"
             if st.button(clear_label, use_container_width=True, key="clear-goals"):
                 if user_id:
@@ -4164,7 +4256,6 @@ def render_goals_panel() -> None:
                 st.session_state.goals_uploader_nonce = nonce + 1
                 st.rerun()
         else:
-            st.caption("로드된 목표 문서가 없습니다. (일반 대화 모드)")
             if st.button(
                 "샘플 목표 불러오기",
                 use_container_width=True,
@@ -4261,51 +4352,73 @@ def render_sidebar() -> None:
     with st.sidebar:
         st.header("설정")
 
+        render_auth_controls()
+
         if st.button("새 대화", use_container_width=True):
             reset_conversation()
             st.rerun()
 
-        render_auth_controls()
+        render_user_session_list()
+
+        st.divider()
+        st.caption("개인화")
         render_coaching_preferences()
         render_goals_panel()
+        render_response_settings_panel()
+
+        with st.expander("개인정보", expanded=False):
+            st.caption(
+                "로그인하면 대화와 목표 파일이 계정에 저장됩니다. "
+                "목표 파일은 private storage에 보관되며, 삭제 버튼으로 제거할 수 있습니다."
+            )
 
         sidebar_status = str(st.session_state.get("supabase_status") or "")
         if any(marker in sidebar_status for marker in ("실패", "필요", "권한", "미설정")):
             st.caption(sidebar_status)
 
 
-def render_prompt_settings() -> tuple[str, str]:
+def default_prompt_settings() -> tuple[str, str]:
     configured_model = os.getenv("DEEPSEEK_MODEL", DEFAULT_MODEL)
     if configured_model not in SUPPORTED_MODELS:
         configured_model = DEFAULT_MODEL
 
     configured_thinking = normalize_thinking_mode(os.getenv("DEEPSEEK_THINKING_MODE"))
-    model_column, thinking_column = st.columns([1.05, 1], gap="small")
+    return configured_model, configured_thinking
 
-    with model_column:
+
+def current_prompt_settings() -> tuple[str, str]:
+    configured_model, configured_thinking = default_prompt_settings()
+    model = st.session_state.get("response-model-select") or configured_model
+    if model not in SUPPORTED_MODELS:
+        model = configured_model
+    thinking = normalize_thinking_mode(
+        str(st.session_state.get("response-thinking-mode-select") or configured_thinking)
+    )
+    return str(model), thinking
+
+
+def render_response_settings_panel() -> None:
+    configured_model, configured_thinking = current_prompt_settings()
+    with st.expander("응답 설정", expanded=False):
         model = st.segmented_control(
             "모델",
             options=SUPPORTED_MODELS,
             default=configured_model,
             required=True,
             format_func=model_label,
-            key="model-select",
+            key="response-model-select",
             width="stretch",
         )
-
-    thinking_options = list(THINKING_MODES.keys())
-    with thinking_column:
         thinking_mode = st.segmented_control(
             "사고 모드",
-            options=thinking_options,
+            options=list(THINKING_MODES.keys()),
             default=configured_thinking,
             required=True,
             format_func=thinking_mode_label,
-            key="thinking-mode-select",
+            key="response-thinking-mode-select",
             width="stretch",
         )
-
-    return str(model or DEFAULT_MODEL), normalize_thinking_mode(str(thinking_mode))
+        st.caption(f"현재 설정: {model_label(model)} · {thinking_mode_label(thinking_mode)}")
 
 
 def drain_event_queue(
@@ -4561,10 +4674,10 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
-  padding-bottom: 18rem;
+  padding-bottom: 10.5rem;
 }
 [data-testid="stBottom"] {
-  padding-bottom: 3.2rem;
+  padding-bottom: 1rem;
 }
 .run-status-box {
   align-items: center;
@@ -4648,37 +4761,36 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
   min-width: 0;
   overflow-wrap: anywhere;
 }
-div[class*="st-key-model-select"],
-div[class*="st-key-thinking-mode-select"] {
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid rgba(49, 51, 63, 0.16);
-  border-radius: 6px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
-  max-width: none;
-  padding: 0.22rem 0.28rem;
-  position: fixed;
-  left: 1rem;
-  right: 1rem;
-  transform: none;
-  width: calc(100% - 2rem) !important;
-  z-index: 9980;
+.goal-file-card {
+  background: rgba(46, 134, 222, 0.06);
+  border: 1px solid rgba(46, 134, 222, 0.16);
+  border-radius: 7px;
+  margin: 0.2rem 0 0.65rem;
+  padding: 0.68rem 0.78rem;
 }
-div[class*="st-key-thinking-mode-select"] {
-  bottom: 0.8rem;
+.goal-file-card--empty {
+  background: rgba(49, 51, 63, 0.035);
+  border-color: rgba(49, 51, 63, 0.12);
 }
-div[class*="st-key-model-select"] {
-  bottom: 3.65rem;
-}
-div[class*="st-key-model-select"] label,
-div[class*="st-key-thinking-mode-select"] label {
-  display: none;
-}
-div[class*="st-key-model-select"] button,
-div[class*="st-key-thinking-mode-select"] button {
+.goal-file-card__label {
+  color: rgba(49, 51, 63, 0.58);
   font-size: 0.72rem;
-  min-height: 28px;
-  padding: 0.2rem 0.32rem;
-  white-space: nowrap;
+  font-weight: 700;
+  margin-bottom: 0.18rem;
+}
+.goal-file-card__title {
+  color: rgba(49, 51, 63, 0.92);
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+.goal-file-card__meta {
+  color: rgba(49, 51, 63, 0.62);
+  font-size: 0.76rem;
+  line-height: 1.25;
+  margin-top: 0.18rem;
+  overflow-wrap: anywhere;
 }
 [data-testid="stChatInput"] textarea,
 [data-baseweb="base-input"] textarea {
@@ -4701,7 +4813,7 @@ div[class*="st-key-thinking-mode-select"] button {
   width: 2rem !important;
 }
 div[class*="st-key-stop-run-"] {
-  bottom: 26.8rem;
+  bottom: 6.4rem;
   position: fixed;
   right: 1rem;
   width: 4.1rem;
@@ -4723,25 +4835,17 @@ div[class*="st-key-stop-run-"] button:hover {
 @media (min-width: 900px) {
   [data-testid="stAppViewContainer"] .main .block-container,
   [data-testid="stMainBlockContainer"] {
-    padding-bottom: 15.5rem;
+    padding-bottom: 10.5rem;
   }
   .run-status-box {
-    bottom: 10.25rem;
+    bottom: 6.75rem;
     width: min(44rem, calc(100vw - 2rem));
   }
   body:has([data-testid="stSidebar"][aria-expanded="true"]) .run-status-box {
     left: calc(50% + 150px);
   }
-  div[class*="st-key-model-select"],
-  div[class*="st-key-thinking-mode-select"] {
-    bottom: 3.05rem;
-    left: auto;
-    max-width: 20.7rem;
-    right: auto;
-    width: 20.7rem !important;
-  }
   div[class*="st-key-stop-run-"] {
-    bottom: 7.2rem;
+    bottom: 3.9rem;
     left: min(calc(50% + 22rem + 0.5rem), calc(100vw - 5.1rem));
     right: auto;
   }
@@ -4751,7 +4855,7 @@ div[class*="st-key-stop-run-"] button:hover {
 }
 @media (min-width: 900px) and (max-width: 1184px) {
   body:has([data-testid="stSidebar"][aria-expanded="true"]) div[class*="st-key-stop-run-"] {
-    bottom: 19.25rem;
+    bottom: 6.75rem;
     left: auto;
     right: 1rem;
   }
@@ -4790,10 +4894,11 @@ div[class*="st-key-stop-run-"] button:hover {
     render_copy_feedback()
 
     render_sidebar()
+    model, thinking_mode = current_prompt_settings()
     api_key = read_deepseek_api_key()
 
     st.title(APP_TITLE)
-    st.caption("OpenAI Agents SDK + Streamlit 기반 자기계발 코치")
+    st.caption("목표를 작게 나누고 오늘 할 일을 정리해 주는 라이프 코치")
 
     for index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
@@ -4809,7 +4914,7 @@ div[class*="st-key-stop-run-"] button:hover {
             )
             render_run_evidence(message.get("evidence"))
 
-    model, thinking_mode = render_prompt_settings()
+    render_starter_prompts(model, thinking_mode)
     chat_input_label = "예: 아침에 일찍 일어나고 싶은데 자꾸 알람을 꺼요"
     pending_generation = st.session_state.get("pending_generation")
 
@@ -4818,17 +4923,7 @@ div[class*="st-key-stop-run-"] button:hover {
         if not prompt:
             return
 
-        run_id = f"run-{uuid.uuid4().hex}"
-        st.session_state.messages.append({"role": "user", "content": prompt})
-        persist_chat_message("user", prompt)
-        st.session_state.pending_generation = {
-            "prompt": prompt,
-            "run_id": run_id,
-            "model": model,
-            "thinking_mode": thinking_mode,
-            "goals_text": str(st.session_state.get("goals_text") or ""),
-        }
-        st.rerun()
+        queue_prompt_for_generation(prompt, model, thinking_mode)
 
     if not isinstance(pending_generation, dict):
         st.session_state.pop("pending_generation", None)
