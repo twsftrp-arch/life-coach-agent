@@ -753,8 +753,12 @@ def build_share_url(share_token: str) -> str:
     return f"{read_app_base_url()}/?{urlencode({SHARE_QUERY_PARAM: share_token})}"
 
 
-def clear_oauth_query_params() -> None:
+def clear_oauth_query_params(preserve_auth_token: str | None = None) -> None:
     st.session_state.pending_oauth_url_cleanup = True
+    if preserve_auth_token and re.fullmatch(r"[A-Za-z0-9_-]{40,160}", preserve_auth_token):
+        st.session_state.pending_auth_restore_url_token = preserve_auth_token
+    elif "pending_auth_restore_url_token" in st.session_state:
+        del st.session_state.pending_auth_restore_url_token
 
 
 def default_greeting() -> dict[str, str]:
@@ -855,8 +859,6 @@ def restore_auth_session_if_possible() -> None:
         or get_auth_cookie_token()
         or query_auth_token
     )
-    if query_auth_token:
-        clear_oauth_query_params()
     if not refresh_token and app_auth_token:
         try:
             app_session = supabase_load_app_auth_session(str(app_auth_token))
@@ -869,6 +871,7 @@ def restore_auth_session_if_possible() -> None:
     if not refresh_token:
         if query_auth_token:
             st.session_state.pending_auth_cookie_delete = True
+            clear_oauth_query_params()
         return
 
     try:
@@ -894,6 +897,8 @@ def restore_auth_session_if_possible() -> None:
         if app_auth_token:
             supabase_revoke_app_auth_session(str(app_auth_token))
             st.session_state.pending_auth_cookie_delete = True
+        if query_auth_token:
+            clear_oauth_query_params()
         for key in ("auth_access_token", "auth_refresh_token", "auth_user"):
             if key in st.session_state:
                 del st.session_state[key]
@@ -1120,27 +1125,37 @@ def render_oauth_url_cleanup_script() -> None:
     if not st.session_state.get("pending_oauth_url_cleanup"):
         return
 
+    restore_token = st.session_state.get("pending_auth_restore_url_token")
+    restore_token_json = json.dumps(str(restore_token or "")).replace("<", "\\u003c")
+    restore_param_json = json.dumps(AUTH_RESTORE_QUERY_PARAM).replace("<", "\\u003c")
     components.html(
-        """
+        f"""
 <script>
-(function () {
-  const cleanUrl = (target) => {
-    try {
-      if (!target || !target.location || !target.history) {
+(function () {{
+  const restoreToken = {restore_token_json};
+  const restoreParam = {restore_param_json};
+  const cleanUrl = (target) => {{
+    try {{
+      if (!target || !target.location || !target.history) {{
         return;
-      }
-      const nextUrl = target.location.origin + target.location.pathname;
-      target.history.replaceState({}, "", nextUrl);
-    } catch (error) {}
-  };
+      }}
+      const nextUrl = new URL(target.location.origin + target.location.pathname);
+      if (restoreToken) {{
+        nextUrl.searchParams.set(restoreParam, restoreToken);
+      }}
+      target.history.replaceState({{}}, "", nextUrl.toString());
+    }} catch (error) {{}}
+  }};
 
   [window, window.parent, window.top].forEach(cleanUrl);
-})();
+}})();
 </script>
 """,
         height=0,
     )
     del st.session_state.pending_oauth_url_cleanup
+    if "pending_auth_restore_url_token" in st.session_state:
+        del st.session_state.pending_auth_restore_url_token
 
 
 def render_browser_head_tags() -> None:
@@ -1329,6 +1344,7 @@ def handle_google_oauth_callback() -> bool:
         )
         auth_user = store_auth_response(auth_response)
         refresh_token = str(auth_response.get("refresh_token") or "")
+        app_auth_token = None
         if refresh_token:
             app_auth_token = supabase_create_app_auth_session(
                 auth_user["id"],
@@ -1351,7 +1367,7 @@ def handle_google_oauth_callback() -> bool:
             pass
         supabase_delete_oauth_states(state_session_key, state)
         clear_cached_google_oauth_url()
-        clear_oauth_query_params()
+        clear_oauth_query_params(preserve_auth_token=app_auth_token)
         return True
     except Exception as exc:
         st.session_state.auth_status = f"Google 로그인 실패: {exc.__class__.__name__}"
@@ -3236,6 +3252,7 @@ def render_auth_controls() -> None:
             st.session_state.custom_coach_instructions = ""
             clear_cached_google_oauth_url()
             st.session_state.pending_auth_cookie_delete = True
+            clear_oauth_query_params()
             st.session_state.auth_status = "Google 로그아웃 완료"
             st.rerun()
         render_user_session_list()
