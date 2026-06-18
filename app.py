@@ -3672,16 +3672,13 @@ def extract_uploaded_goal_text(uploaded_file) -> str:
 
 def render_goals_panel() -> None:
     with st.expander("개인 목표 파일", expanded=False):
-        st.caption(
-            "목표·일기 파일(TXT/Markdown/PDF)을 올리거나 샘플을 불러오면 코치가 "
-            "`search_goals` 도구로 내용을 참고해 답합니다. 로드하지 않으면 일반 "
-            "대화로 동작합니다."
-        )
+        st.caption("TXT, MD, 텍스트 PDF만 지원합니다. 스캔 PDF는 읽지 못해요.")
         nonce = int(st.session_state.get("goals_uploader_nonce", 0))
         uploaded = st.file_uploader(
             "목표 파일 업로드",
-            type=["txt", "md", "markdown", "pdf"],
+            type=["txt", "md", "pdf"],
             key=f"goals-file-uploader-{nonce}",
+            help="PDF는 텍스트 선택/복사가 가능한 파일만 읽습니다. OCR은 지원하지 않습니다.",
             label_visibility="collapsed",
         )
         if uploaded is not None:
@@ -3691,8 +3688,7 @@ def render_goals_panel() -> None:
                 st.session_state.goals_source = f"업로드: {uploaded.name}"
             else:
                 st.caption(
-                    "파일에서 텍스트를 추출하지 못했어요. PDF라면 텍스트형 PDF인지 "
-                    "확인하거나 TXT/Markdown으로 올려 주세요."
+                    "텍스트를 읽지 못했어요. TXT, MD, 텍스트 PDF로 올려 주세요."
                 )
 
         goals_text = str(st.session_state.get("goals_text") or "")
@@ -3702,7 +3698,12 @@ def render_goals_panel() -> None:
             preview = goals_text[:GOALS_PREVIEW_CHARS]
             if len(goals_text) > GOALS_PREVIEW_CHARS:
                 preview += " ..."
-            st.text_area("목표 미리보기", value=preview, height=140, disabled=True)
+            st.text_area(
+                "읽어낸 내용 미리보기",
+                value=preview,
+                height=140,
+                disabled=True,
+            )
             if st.button(
                 "목표 문서 비우기", use_container_width=True, key="clear-goals"
             ):
