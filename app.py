@@ -3307,14 +3307,24 @@ def render_share_controls(session_key: str, user_id: str) -> None:
             share = supabase_create_shared_chat(session_key, user_id, messages)
             share_url = share["url"]
             st.session_state.share_status = "공유 링크가 준비됐어요."
+            st.session_state.share_status_session_key = session_key
             st.session_state.latest_share_url = share_url
             st.session_state.latest_share_token = share["share_token"]
+            st.session_state.latest_share_session_key = session_key
         except Exception as exc:
             st.session_state.share_status = (
                 f"공유 링크 생성 실패: {exc.__class__.__name__}"
             )
+            st.session_state.share_status_session_key = session_key
 
-    latest_share_url = st.session_state.get("latest_share_url")
+    latest_share_session_key = str(
+        st.session_state.get("latest_share_session_key") or ""
+    )
+    latest_share_url = (
+        st.session_state.get("latest_share_url")
+        if latest_share_session_key == session_key
+        else None
+    )
     latest_share_url_text = ""
     if latest_share_url:
         latest_share_url = str(latest_share_url)
@@ -3326,7 +3336,11 @@ def render_share_controls(session_key: str, user_id: str) -> None:
         st.caption(f"공유 링크 로드 실패: {exc.__class__.__name__}")
         return
 
-    latest_share_token = str(st.session_state.get("latest_share_token") or "")
+    latest_share_token = (
+        str(st.session_state.get("latest_share_token") or "")
+        if latest_share_session_key == session_key
+        else ""
+    )
     featured_share_token = latest_share_token
     featured_share_url = latest_share_url_text
     if not featured_share_url and shares:
@@ -3339,7 +3353,11 @@ def render_share_controls(session_key: str, user_id: str) -> None:
                 featured_share_token = item_token
                 break
 
-    share_status = str(st.session_state.get("share_status") or "").strip()
+    share_status = (
+        str(st.session_state.get("share_status") or "").strip()
+        if st.session_state.get("share_status_session_key") == session_key
+        else ""
+    )
     if share_status:
         if "실패" in share_status:
             st.caption(share_status)
@@ -3368,13 +3386,19 @@ def render_share_controls(session_key: str, user_id: str) -> None:
                     try:
                         supabase_revoke_shared_chat(featured_share_token, user_id)
                         st.session_state.share_status = "공유를 중지했어요."
-                        for key in ("latest_share_url", "latest_share_token"):
+                        st.session_state.share_status_session_key = session_key
+                        for key in (
+                            "latest_share_url",
+                            "latest_share_token",
+                            "latest_share_session_key",
+                        ):
                             if key in st.session_state:
                                 del st.session_state[key]
                     except Exception as exc:
                         st.session_state.share_status = (
                             f"공유 중지 실패: {exc.__class__.__name__}"
                         )
+                        st.session_state.share_status_session_key = session_key
                     st.rerun()
 
     if not shares:
@@ -3412,14 +3436,18 @@ def render_share_controls(session_key: str, user_id: str) -> None:
                 try:
                     supabase_revoke_shared_chat(share_token, user_id)
                     st.session_state.share_status = "공유 링크를 취소했어요."
+                    st.session_state.share_status_session_key = session_key
                     if st.session_state.get("latest_share_url") == share_url:
                         del st.session_state.latest_share_url
                     if st.session_state.get("latest_share_token") == share_token:
                         del st.session_state.latest_share_token
+                    if st.session_state.get("latest_share_session_key") == session_key:
+                        del st.session_state.latest_share_session_key
                 except Exception as exc:
                     st.session_state.share_status = (
                         f"공유 취소 실패: {exc.__class__.__name__}"
                     )
+                    st.session_state.share_status_session_key = session_key
                 st.rerun()
 
 
