@@ -3078,7 +3078,7 @@ def render_auth_controls() -> None:
             safe_url = html.escape(login_url, quote=True)
             st.markdown(
                 f"""
-<a class="google-login-link" href="{safe_url}" target="_self" rel="noreferrer">
+<a class="google-login-link" href="{safe_url}" target="_top" rel="noreferrer">
   Google로 로그인
 </a>
 """,
