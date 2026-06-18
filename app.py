@@ -1410,9 +1410,8 @@ def format_saved_session_label(item: dict[str, object]) -> str:
         title = "제목 없는 대화"
     if len(title) > 34:
         title = f"{title[:31]}..."
-    updated_at = str(item.get("updated_at") or item.get("created_at") or "")
-    date_label = updated_at[:10] if updated_at else ""
-    return f"{title} · {date_label}" if date_label else title
+    timestamp_label = saved_session_timestamp(item)
+    return f"{title} · {timestamp_label}" if timestamp_label else title
 
 
 def saved_session_title(item: dict[str, object], max_chars: int = 34) -> str:
@@ -1422,9 +1421,14 @@ def saved_session_title(item: dict[str, object], max_chars: int = 34) -> str:
     return title
 
 
-def saved_session_date(item: dict[str, object]) -> str:
+def saved_session_timestamp(item: dict[str, object]) -> str:
     updated_at = str(item.get("updated_at") or item.get("created_at") or "")
-    return updated_at[:10] if updated_at else ""
+    if not updated_at:
+        return ""
+    normalized = updated_at.replace("Z", "").replace("+00:00", "")
+    if "T" in normalized and len(normalized) >= 16:
+        return normalized[:16].replace("T", " ")
+    return updated_at[:10]
 
 
 def supabase_load_messages(session_key: str) -> list[dict[str, object]]:
@@ -3159,66 +3163,66 @@ def render_auth_controls() -> None:
 
 
 def render_share_controls(session_key: str, user_id: str) -> None:
-    with st.expander("공유", expanded=False):
-        st.caption("공유 링크는 현재 대화의 읽기 전용 snapshot입니다.")
-        messages = st.session_state.get("messages") or []
-        if not isinstance(messages, list):
-            messages = []
+    st.caption("공유")
+    messages = st.session_state.get("messages") or []
+    if not isinstance(messages, list):
+        messages = []
 
-        can_share = any(
-            isinstance(message, dict) and message.get("role") == "user"
-            for message in messages
-        )
-        if not can_share:
-            st.caption("사용자 메시지가 생기면 공유 링크를 만들 수 있습니다.")
-            return
+    can_share = any(
+        isinstance(message, dict) and message.get("role") == "user"
+        for message in messages
+    )
+    if not can_share:
+        st.caption("사용자 메시지가 생기면 공유 링크를 만들 수 있습니다.")
+        return
 
-        if st.button(
-            "공유하기",
-            key=f"create-share-{session_key[-8:]}",
-            use_container_width=True,
-        ):
-            try:
-                share = supabase_create_shared_chat(session_key, user_id, messages)
-                share_url = share["url"]
-                st.session_state.share_status = (
-                    "공유 링크를 만들었어요. 아래 '공유 앱 선택' 또는 "
-                    "'링크 복사'를 눌러 공유하세요."
-                )
-                st.session_state.latest_share_url = share_url
-            except Exception as exc:
-                st.session_state.share_status = (
-                    f"공유 링크 생성 실패: {exc.__class__.__name__}"
-                )
-
-        share_status = st.session_state.get("share_status")
-        if share_status:
-            st.caption(str(share_status))
-
-        latest_share_url = st.session_state.get("latest_share_url")
-        latest_share_url_text = ""
-        if latest_share_url:
-            latest_share_url = str(latest_share_url)
-            latest_share_url_text = latest_share_url
-            st.text_input(
-                "최근 공유 링크",
-                value=latest_share_url,
-                key=f"latest-share-url-{session_key[-8:]}",
-            )
-            render_web_share_actions(
-                latest_share_url,
-                f"latest-share-{session_key[-8:]}",
-            )
-
+    if st.button(
+        "공유 링크 만들기",
+        key=f"create-share-{session_key[-8:]}",
+        use_container_width=True,
+    ):
         try:
-            shares = supabase_list_shared_chats(session_key, user_id)
+            share = supabase_create_shared_chat(session_key, user_id, messages)
+            share_url = share["url"]
+            st.session_state.share_status = (
+                "공유 링크를 만들었어요. 아래 '공유 앱 선택' 또는 "
+                "'링크 복사'를 눌러 공유하세요."
+            )
+            st.session_state.latest_share_url = share_url
         except Exception as exc:
-            st.caption(f"공유 링크 로드 실패: {exc.__class__.__name__}")
-            return
+            st.session_state.share_status = (
+                f"공유 링크 생성 실패: {exc.__class__.__name__}"
+            )
 
-        if not shares:
-            return
+    share_status = st.session_state.get("share_status")
+    if share_status:
+        st.caption(str(share_status))
 
+    latest_share_url = st.session_state.get("latest_share_url")
+    latest_share_url_text = ""
+    if latest_share_url:
+        latest_share_url = str(latest_share_url)
+        latest_share_url_text = latest_share_url
+        st.text_input(
+            "최근 공유 링크",
+            value=latest_share_url,
+            key=f"latest-share-url-{session_key[-8:]}",
+        )
+        render_web_share_actions(
+            latest_share_url,
+            f"latest-share-{session_key[-8:]}",
+        )
+
+    try:
+        shares = supabase_list_shared_chats(session_key, user_id)
+    except Exception as exc:
+        st.caption(f"공유 링크 로드 실패: {exc.__class__.__name__}")
+        return
+
+    if not shares:
+        return
+
+    with st.expander("공유 링크 관리", expanded=False):
         st.caption("활성 공유 링크")
         for item in shares:
             share_token = str(item.get("share_token") or "")
@@ -3269,12 +3273,12 @@ def render_user_session_list() -> None:
             st.caption("아직 저장된 대화가 없습니다.")
             return
 
-        current_session_key = str(st.session_state.get("chat_session_key") or "")
+        current_session_key = str(st.session_state.get("chat_session_key") or "").strip()
         current_item = next(
             (
                 item
                 for item in sessions
-                if str(item.get("session_key") or "") == current_session_key
+                if str(item.get("session_key") or "").strip() == current_session_key
             ),
             None,
         )
@@ -3282,14 +3286,16 @@ def render_user_session_list() -> None:
         st.caption("현재 대화")
         if current_item:
             current_title = saved_session_title(current_item)
-            current_date = saved_session_date(current_item)
+            current_timestamp = saved_session_timestamp(current_item)
             st.markdown(f"**{current_title}**")
-            if current_date:
-                st.caption(f"최근 수정: {current_date}")
+            if current_timestamp:
+                st.caption(f"최근 수정: {current_timestamp}")
 
             session_key = current_session_key
+            render_share_controls(session_key, user_id)
+
             manage_current = st.toggle(
-                "현재 대화 관리",
+                "이름 변경·삭제",
                 key=f"manage-session-{session_key[-8:]}",
             )
             if manage_current:
@@ -3317,8 +3323,6 @@ def render_user_session_list() -> None:
                             f"대화 이름 저장 실패: {exc.__class__.__name__}"
                         )
                     st.rerun()
-
-                render_share_controls(session_key, user_id)
 
                 confirm_key = f"confirm-delete-{session_key}"
                 if st.session_state.get(confirm_key):
@@ -3365,7 +3369,7 @@ def render_user_session_list() -> None:
         other_sessions = [
             item
             for item in sessions
-            if str(item.get("session_key") or "") != current_session_key
+            if str(item.get("session_key") or "").strip() != current_session_key
         ]
         st.divider()
         st.caption("다른 대화 열기")
