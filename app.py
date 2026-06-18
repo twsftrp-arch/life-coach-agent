@@ -742,10 +742,7 @@ def build_share_url(share_token: str) -> str:
 
 
 def clear_oauth_query_params() -> None:
-    try:
-        st.query_params.clear()
-    except Exception:
-        return
+    st.session_state.pending_oauth_url_cleanup = True
 
 
 def default_greeting() -> dict[str, str]:
@@ -974,10 +971,25 @@ def render_auth_cookie_scripts() -> None:
 
     if pending_token:
         safe_token = html.escape(str(pending_token), quote=True)
+        cookie_value = (
+            f"{AUTH_COOKIE_NAME}={safe_token}; "
+            f"Max-Age={AUTH_SESSION_DAYS * 86400}; Path=/; SameSite=Lax{secure_attr}"
+        )
+        cookie_json = json.dumps(cookie_value).replace("<", "\\u003c")
         components.html(
             f"""
 <script>
-document.cookie = "{AUTH_COOKIE_NAME}={safe_token}; Max-Age={AUTH_SESSION_DAYS * 86400}; Path=/; SameSite=Lax{secure_attr}";
+(function () {{
+  const cookieValue = {cookie_json};
+  const targets = [window, window.parent, window.top];
+  targets.forEach((target) => {{
+    try {{
+      if (target && target.document) {{
+        target.document.cookie = cookieValue;
+      }}
+    }} catch (error) {{}}
+  }});
+}})();
 </script>
 """,
             height=0,
@@ -986,15 +998,54 @@ document.cookie = "{AUTH_COOKIE_NAME}={safe_token}; Max-Age={AUTH_SESSION_DAYS *
         del st.session_state.pending_auth_cookie_token
 
     if pending_delete:
+        cookie_value = f"{AUTH_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax{secure_attr}"
+        cookie_json = json.dumps(cookie_value).replace("<", "\\u003c")
         components.html(
             f"""
 <script>
-document.cookie = "{AUTH_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax{secure_attr}";
+(function () {{
+  const cookieValue = {cookie_json};
+  const targets = [window, window.parent, window.top];
+  targets.forEach((target) => {{
+    try {{
+      if (target && target.document) {{
+        target.document.cookie = cookieValue;
+      }}
+    }} catch (error) {{}}
+  }});
+}})();
 </script>
 """,
             height=0,
         )
         del st.session_state.pending_auth_cookie_delete
+
+
+def render_oauth_url_cleanup_script() -> None:
+    if not st.session_state.get("pending_oauth_url_cleanup"):
+        return
+
+    components.html(
+        """
+<script>
+(function () {
+  const cleanUrl = (target) => {
+    try {
+      if (!target || !target.location || !target.history) {
+        return;
+      }
+      const nextUrl = target.location.origin + target.location.pathname;
+      target.history.replaceState({}, "", nextUrl);
+    } catch (error) {}
+  };
+
+  [window, window.parent, window.top].forEach(cleanUrl);
+})();
+</script>
+""",
+        height=0,
+    )
+    del st.session_state.pending_oauth_url_cleanup
 
 
 def render_browser_head_tags() -> None:
@@ -3970,6 +4021,7 @@ div[class*="st-key-stop-run-"] button:hover {
         force=bool(current_auth_user_id() and stale_permission_status)
     )
     render_auth_cookie_scripts()
+    render_oauth_url_cleanup_script()
 
     render_copy_feedback()
 
