@@ -4,6 +4,7 @@ import asyncio
 import contextvars
 import html
 import json
+import mimetypes
 import os
 import re
 import secrets as token_secrets
@@ -127,6 +128,9 @@ DB_PATH = Path(__file__).with_name("life_coach_sessions.db")
 GOALS_PATH = Path(__file__).with_name("goals") / "personal_goals.md"
 GOALS_MAX_CHARS = 20000
 GOALS_PREVIEW_CHARS = 600
+GOAL_FILE_MAX_BYTES = 10 * 1024 * 1024
+GOAL_STORAGE_BUCKET = "life-coach-goal-files"
+GOAL_STORAGE_PREFIX = "goals"
 MAX_GOAL_SEARCH_CALLS_PER_MESSAGE = 2
 POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt/"
 IMAGE_WIDTH = 1024
@@ -478,6 +482,15 @@ def read_supabase_config() -> dict[str, str] | None:
     return {"url": url.rstrip("/"), "key": key}
 
 
+def read_supabase_service_config() -> dict[str, str] | None:
+    url = read_config_value("SUPABASE_URL")
+    key = read_config_value("SUPABASE_SERVICE_ROLE_KEY")
+    if not url or not key:
+        return None
+
+    return {"url": url.rstrip("/"), "key": key}
+
+
 def read_supabase_public_config() -> dict[str, str] | None:
     url = read_config_value("SUPABASE_URL")
     key = read_config_value("SUPABASE_ANON_KEY")
@@ -586,6 +599,91 @@ def supabase_request(
     if not response_text:
         return None
     return json.loads(response_text)
+
+
+def supabase_storage_request(
+    method: str,
+    path: str,
+    payload: object | None = None,
+    data: bytes | None = None,
+    content_type: str | None = None,
+    extra_headers: dict[str, str] | None = None,
+    parse_json: bool = True,
+    timeout: int = 20,
+) -> object:
+    config = read_supabase_service_config()
+    if not config:
+        raise RuntimeError("Supabase service role is not configured")
+
+    body = None
+    headers = {
+        "Accept": "application/json",
+        "apikey": config["key"],
+        "Authorization": f"Bearer {config['key']}",
+    }
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+    elif data is not None:
+        headers["Content-Type"] = content_type or "application/octet-stream"
+        body = data
+    if extra_headers:
+        headers.update(extra_headers)
+
+    request = Request(
+        f"{config['url']}/storage/v1/{path.lstrip('/')}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except HTTPError as exc:
+        body_text = exc.read().decode("utf-8", errors="replace")
+        detail = ""
+        if body_text:
+            try:
+                body_json = json.loads(body_text)
+                if isinstance(body_json, dict):
+                    detail = str(
+                        body_json.get("message")
+                        or body_json.get("error")
+                        or body_json.get("code")
+                        or ""
+                    )
+            except json.JSONDecodeError:
+                detail = body_text[:120]
+        suffix = f": {detail}" if detail else ""
+        raise RuntimeError(f"Supabase Storage HTTP {exc.code}{suffix}") from exc
+    except (OSError, URLError) as exc:
+        raise RuntimeError(
+            f"Supabase Storage request failed: {exc.__class__.__name__}"
+        ) from exc
+
+    if not raw:
+        return None
+    if not parse_json:
+        return raw
+
+    text = raw.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+def storage_path_fragment(value: str) -> str:
+    return quote(value.lstrip("/"), safe="/")
+
+
+def storage_error_is_missing(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return (
+        "http 400" in text
+        and ("not found" in text or "does not exist" in text)
+    ) or "http 404" in text
 
 
 def supabase_auth_request(
@@ -1846,6 +1944,294 @@ def restore_user_preferences_if_possible() -> None:
         st.session_state.preference_status = (
             f"코칭 설정 복원 실패: {exc.__class__.__name__}"
         )
+
+
+def goal_storage_base_path(user_id: str) -> str:
+    return f"{GOAL_STORAGE_PREFIX}/{user_id}/active"
+
+
+def goal_storage_text_path(user_id: str) -> str:
+    return f"{goal_storage_base_path(user_id)}/text.txt"
+
+
+def goal_storage_meta_path(user_id: str) -> str:
+    return f"{goal_storage_base_path(user_id)}/meta.json"
+
+
+def sanitize_storage_filename(filename: str) -> str:
+    clean = Path(filename or "goals.txt").name.strip()
+    clean = re.sub(r"[^A-Za-z0-9._-]+", "-", clean).strip(".-")
+    if not clean:
+        clean = "goals.txt"
+    return clean[:96]
+
+
+def guess_goal_content_type(filename: str, uploaded_file: object | None = None) -> str:
+    upload_type = str(getattr(uploaded_file, "type", "") or "").strip()
+    if upload_type:
+        return upload_type
+    guessed, _ = mimetypes.guess_type(filename)
+    return guessed or "application/octet-stream"
+
+
+def read_uploaded_file_bytes(uploaded_file) -> bytes:
+    if hasattr(uploaded_file, "getvalue"):
+        data = uploaded_file.getvalue()
+    else:
+        data = uploaded_file.read()
+    if isinstance(data, bytes):
+        return data
+    return str(data).encode("utf-8")
+
+
+def supabase_ensure_goal_storage_bucket() -> None:
+    if st.session_state.get("goal_storage_bucket_ready"):
+        return
+
+    bucket_fragment = storage_path_fragment(GOAL_STORAGE_BUCKET)
+    try:
+        supabase_storage_request("GET", f"bucket/{bucket_fragment}")
+    except Exception as exc:
+        if not storage_error_is_missing(exc):
+            raise
+        try:
+            supabase_storage_request(
+                "POST",
+                "bucket",
+                {
+                    "id": GOAL_STORAGE_BUCKET,
+                    "name": GOAL_STORAGE_BUCKET,
+                    "public": False,
+                    "file_size_limit": GOAL_FILE_MAX_BYTES,
+                },
+            )
+        except Exception as create_exc:
+            if "already" not in str(create_exc).lower():
+                raise
+
+    st.session_state.goal_storage_bucket_ready = True
+
+
+def supabase_upload_goal_storage_object(
+    path: str,
+    data: bytes,
+    content_type: str,
+) -> None:
+    bucket = storage_path_fragment(GOAL_STORAGE_BUCKET)
+    object_path = storage_path_fragment(path)
+    supabase_storage_request(
+        "POST",
+        f"object/{bucket}/{object_path}",
+        data=data,
+        content_type=content_type,
+        extra_headers={"x-upsert": "true"},
+        timeout=30,
+    )
+
+
+def supabase_download_goal_storage_object(path: str) -> bytes | None:
+    bucket = storage_path_fragment(GOAL_STORAGE_BUCKET)
+    object_path = storage_path_fragment(path)
+    try:
+        data = supabase_storage_request(
+            "GET",
+            f"object/{bucket}/{object_path}",
+            parse_json=False,
+            timeout=15,
+        )
+    except Exception as exc:
+        if storage_error_is_missing(exc):
+            return None
+        raise
+    return data if isinstance(data, bytes) else None
+
+
+def supabase_delete_goal_storage_object(path: str | None) -> None:
+    if not path:
+        return
+    bucket = storage_path_fragment(GOAL_STORAGE_BUCKET)
+    object_path = storage_path_fragment(path)
+    try:
+        supabase_storage_request(
+            "DELETE",
+            f"object/{bucket}/{object_path}",
+            timeout=20,
+        )
+    except Exception as exc:
+        if not storage_error_is_missing(exc):
+            raise
+
+
+def supabase_load_goal_document(user_id: str) -> dict[str, object] | None:
+    if not user_id:
+        return None
+
+    meta_bytes = supabase_download_goal_storage_object(goal_storage_meta_path(user_id))
+    if not meta_bytes:
+        return None
+
+    try:
+        meta = json.loads(meta_bytes.decode("utf-8", errors="replace"))
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(meta, dict):
+        return None
+
+    text_path = str(meta.get("text_path") or goal_storage_text_path(user_id))
+    text_bytes = supabase_download_goal_storage_object(text_path)
+    if not text_bytes:
+        return None
+
+    extracted_text = text_bytes.decode("utf-8", errors="replace")[:GOALS_MAX_CHARS]
+    if not extracted_text.strip():
+        return None
+
+    return {
+        "source_filename": str(meta.get("source_filename") or "목표 문서"),
+        "source_content_type": str(meta.get("source_content_type") or ""),
+        "source_size_bytes": int(meta.get("source_size_bytes") or 0),
+        "storage_path": str(meta.get("storage_path") or ""),
+        "text_path": text_path,
+        "updated_at": str(meta.get("updated_at") or ""),
+        "extracted_text": extracted_text,
+    }
+
+
+def supabase_save_goal_document(
+    user_id: str,
+    filename: str,
+    content_type: str,
+    file_bytes: bytes,
+    extracted_text: str,
+) -> dict[str, object]:
+    if not user_id:
+        raise PermissionError("login required")
+    if len(file_bytes) > GOAL_FILE_MAX_BYTES:
+        raise ValueError("goal file too large")
+
+    supabase_ensure_goal_storage_bucket()
+    existing = supabase_load_goal_document(user_id)
+    old_storage_path = str(existing.get("storage_path") or "") if existing else ""
+
+    display_filename = Path(filename or "목표 문서").name.strip() or "목표 문서"
+    display_filename = display_filename[:120]
+    safe_filename = sanitize_storage_filename(filename)
+    source_path = (
+        f"{goal_storage_base_path(user_id)}/original/"
+        f"{uuid.uuid4().hex}-{safe_filename}"
+    )
+    text_path = goal_storage_text_path(user_id)
+    meta_path = goal_storage_meta_path(user_id)
+    updated_at = datetime.now(timezone.utc).isoformat()
+    text_bytes = extracted_text[:GOALS_MAX_CHARS].encode("utf-8")
+
+    supabase_upload_goal_storage_object(source_path, file_bytes, content_type)
+    supabase_upload_goal_storage_object(text_path, text_bytes, "text/plain; charset=utf-8")
+    meta = {
+        "source_filename": display_filename,
+        "storage_filename": safe_filename,
+        "source_content_type": content_type,
+        "source_size_bytes": len(file_bytes),
+        "storage_bucket": GOAL_STORAGE_BUCKET,
+        "storage_path": source_path,
+        "text_path": text_path,
+        "updated_at": updated_at,
+    }
+    supabase_upload_goal_storage_object(
+        meta_path,
+        json.dumps(meta, ensure_ascii=False).encode("utf-8"),
+        "application/json; charset=utf-8",
+    )
+
+    if old_storage_path and old_storage_path != source_path:
+        try:
+            supabase_delete_goal_storage_object(old_storage_path)
+        except Exception:
+            pass
+
+    saved = supabase_load_goal_document(user_id)
+    if not saved:
+        raise RuntimeError("goal document save verification failed")
+    return saved
+
+
+def supabase_delete_goal_document(user_id: str) -> None:
+    if not user_id:
+        raise PermissionError("login required")
+
+    supabase_ensure_goal_storage_bucket()
+    current = supabase_load_goal_document(user_id)
+    paths = []
+    if current:
+        paths.append(str(current.get("storage_path") or ""))
+    paths.extend(
+        [
+            goal_storage_text_path(user_id),
+            goal_storage_meta_path(user_id),
+        ]
+    )
+    for path in paths:
+        try:
+            supabase_delete_goal_storage_object(path)
+        except Exception:
+            pass
+
+
+def clear_goal_document_session() -> None:
+    for key in (
+        "goals_text",
+        "goals_source",
+        "goal_document_meta",
+        "goal_upload_signature",
+    ):
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def apply_goal_document_to_session(document: dict[str, object]) -> None:
+    filename = str(document.get("source_filename") or "목표 문서")
+    updated_at = format_goal_document_timestamp(str(document.get("updated_at") or ""))
+    suffix = f" · {updated_at}" if updated_at else ""
+    st.session_state.goals_text = str(document.get("extracted_text") or "")
+    st.session_state.goals_source = f"저장됨: {filename}{suffix}"
+    st.session_state.goal_document_meta = {
+        "source_filename": filename,
+        "source_size_bytes": int(document.get("source_size_bytes") or 0),
+        "updated_at": str(document.get("updated_at") or ""),
+    }
+
+
+def format_goal_document_timestamp(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return value[:16].replace("T", " ")
+
+
+def restore_goal_document_if_possible() -> None:
+    user_id = current_auth_user_id()
+    if not user_id:
+        return
+    if st.session_state.get("goals_loaded_for_user") == user_id:
+        return
+
+    try:
+        document = supabase_load_goal_document(user_id)
+        if document:
+            apply_goal_document_to_session(document)
+            st.session_state.goal_status = "목표 파일: 복원됨"
+        else:
+            if not str(st.session_state.get("goals_text") or "").strip():
+                clear_goal_document_session()
+            st.session_state.goal_status = "목표 파일: 없음"
+        st.session_state.goals_loaded_for_user = user_id
+    except Exception as exc:
+        st.session_state.goal_status = f"목표 파일 복원 실패: {exc.__class__.__name__}"
 
 
 def search_web_raw(query: str) -> str:
@@ -3245,11 +3631,14 @@ def render_auth_controls() -> None:
                 "auth_cookie_token",
                 "preferences_loaded_for_user",
                 "preference_status",
+                "goals_loaded_for_user",
+                "goal_status",
             ):
                 if key in st.session_state:
                     del st.session_state[key]
             st.session_state.coaching_style = DEFAULT_COACHING_STYLE
             st.session_state.custom_coach_instructions = ""
+            clear_goal_document_session()
             clear_cached_google_oauth_url()
             st.session_state.pending_auth_cookie_delete = True
             clear_oauth_query_params()
@@ -3639,14 +4028,8 @@ def load_default_goals_text() -> str:
         return ""
 
 
-def extract_uploaded_goal_text(uploaded_file) -> str:
-    name = (getattr(uploaded_file, "name", "") or "").lower()
-    # Streamlit UploadedFile exposes getvalue() and stays re-readable across
-    # reruns; fall back to read() only for plain file-like objects.
-    if hasattr(uploaded_file, "getvalue"):
-        data = uploaded_file.getvalue()
-    else:
-        data = uploaded_file.read()
+def extract_goal_text_from_bytes(data: bytes, filename: str) -> str:
+    name = (filename or "").lower()
     if name.endswith(".pdf"):
         try:
             import io
@@ -3665,15 +4048,23 @@ def extract_uploaded_goal_text(uploaded_file) -> str:
             return "\n\n".join(parts)[:GOALS_MAX_CHARS]
         except Exception:
             return ""
-    if isinstance(data, bytes):
-        return data.decode("utf-8", errors="replace")[:GOALS_MAX_CHARS]
-    return str(data)[:GOALS_MAX_CHARS]
+    return data.decode("utf-8", errors="replace")[:GOALS_MAX_CHARS]
+
+
+def extract_uploaded_goal_text(uploaded_file) -> str:
+    data = read_uploaded_file_bytes(uploaded_file)
+    return extract_goal_text_from_bytes(data, getattr(uploaded_file, "name", ""))
 
 
 def render_goals_panel() -> None:
     with st.expander("개인 목표 파일", expanded=False):
-        st.caption("목표 파일 1개, 최대 10MB · TXT/MD/텍스트 PDF")
-        st.caption("스캔 PDF는 읽지 못해요. OCR은 지원하지 않습니다.")
+        user_id = current_auth_user_id()
+        st.caption("목표 파일 1개 · 최대 10MB · TXT/MD/텍스트 PDF")
+        if user_id:
+            st.caption("업로드하면 계정에 저장되고, 새로고침·다른 기기에서도 복원됩니다.")
+        else:
+            st.caption("로그인 전에는 현재 브라우저 세션에만 임시 적용됩니다.")
+        st.caption("스캔 PDF는 읽지 못합니다. OCR은 지원하지 않습니다.")
         nonce = int(st.session_state.get("goals_uploader_nonce", 0))
         uploaded = st.file_uploader(
             "목표 파일 업로드",
@@ -3683,17 +4074,53 @@ def render_goals_panel() -> None:
             label_visibility="collapsed",
         )
         if uploaded is not None:
-            extracted = extract_uploaded_goal_text(uploaded)
-            if extracted.strip():
-                st.session_state.goals_text = extracted
-                st.session_state.goals_source = f"업로드: {uploaded.name}"
+            file_bytes = read_uploaded_file_bytes(uploaded)
+            signature = (
+                f"{getattr(uploaded, 'name', '')}:"
+                f"{len(file_bytes)}:{hashlib.sha256(file_bytes).hexdigest()}"
+            )
+            if len(file_bytes) > GOAL_FILE_MAX_BYTES:
+                st.caption("파일이 10MB를 넘어서 저장하지 않았어요.")
+            elif st.session_state.get("goal_upload_signature") != signature:
+                filename = str(getattr(uploaded, "name", "") or "goals.txt")
+                extracted = extract_goal_text_from_bytes(file_bytes, filename)
+                if extracted.strip():
+                    if user_id:
+                        try:
+                            document = supabase_save_goal_document(
+                                user_id,
+                                filename,
+                                guess_goal_content_type(filename, uploaded),
+                                file_bytes,
+                                extracted,
+                            )
+                            apply_goal_document_to_session(document)
+                            st.session_state.goals_loaded_for_user = user_id
+                            st.session_state.goal_status = "목표 파일 저장됨"
+                        except Exception as exc:
+                            st.session_state.goal_status = (
+                                f"목표 파일 저장 실패: {exc.__class__.__name__}"
+                            )
+                    else:
+                        st.session_state.goals_text = extracted
+                        st.session_state.goals_source = f"임시 업로드: {filename}"
+                        st.session_state.goal_status = "목표 파일: 임시 적용됨"
+                    st.session_state.goal_upload_signature = signature
+                    st.rerun()
+                else:
+                    st.caption(
+                        "텍스트를 읽지 못했어요. TXT, MD, 텍스트 PDF로 올려 주세요."
+                    )
             else:
-                st.caption(
-                    "텍스트를 읽지 못했어요. TXT, MD, 텍스트 PDF로 올려 주세요."
-                )
+                status = st.session_state.get("goal_status")
+                if status:
+                    st.caption(str(status))
 
         goals_text = str(st.session_state.get("goals_text") or "")
         source = str(st.session_state.get("goals_source") or "")
+        goal_status = st.session_state.get("goal_status")
+        if goal_status:
+            st.caption(str(goal_status))
         if goals_text.strip():
             st.caption(f"현재 목표 문서: {source} · {len(goals_text)}자")
             preview = goals_text[:GOALS_PREVIEW_CHARS]
@@ -3705,12 +4132,21 @@ def render_goals_panel() -> None:
                 height=140,
                 disabled=True,
             )
-            if st.button(
-                "목표 문서 비우기", use_container_width=True, key="clear-goals"
-            ):
-                for key in ("goals_text", "goals_source"):
-                    if key in st.session_state:
-                        del st.session_state[key]
+            clear_label = "저장된 목표 문서 삭제" if user_id else "목표 문서 비우기"
+            if st.button(clear_label, use_container_width=True, key="clear-goals"):
+                if user_id:
+                    try:
+                        supabase_delete_goal_document(user_id)
+                        st.session_state.goal_status = "목표 파일 삭제됨"
+                        st.session_state.goals_loaded_for_user = user_id
+                    except Exception as exc:
+                        st.session_state.goal_status = (
+                            f"목표 파일 삭제 실패: {exc.__class__.__name__}"
+                        )
+                        st.rerun()
+                else:
+                    st.session_state.goal_status = "목표 파일 비움"
+                clear_goal_document_session()
                 # rotate the uploader key so the previously uploaded file is
                 # dropped and does not silently reload after clearing.
                 st.session_state.goals_uploader_nonce = nonce + 1
@@ -3724,10 +4160,30 @@ def render_goals_panel() -> None:
             ):
                 default_text = load_default_goals_text()
                 if default_text.strip():
-                    st.session_state.goals_text = default_text
-                    st.session_state.goals_source = (
-                        "기본 샘플 (goals/personal_goals.md)"
-                    )
+                    filename = "personal_goals.md"
+                    file_bytes = default_text.encode("utf-8")
+                    if user_id:
+                        try:
+                            document = supabase_save_goal_document(
+                                user_id,
+                                filename,
+                                "text/markdown; charset=utf-8",
+                                file_bytes,
+                                default_text,
+                            )
+                            apply_goal_document_to_session(document)
+                            st.session_state.goals_loaded_for_user = user_id
+                            st.session_state.goal_status = "샘플 목표 저장됨"
+                        except Exception as exc:
+                            st.session_state.goal_status = (
+                                f"샘플 목표 저장 실패: {exc.__class__.__name__}"
+                            )
+                    else:
+                        st.session_state.goals_text = default_text
+                        st.session_state.goals_source = (
+                            "임시 샘플 (goals/personal_goals.md)"
+                        )
+                        st.session_state.goal_status = "샘플 목표: 임시 적용됨"
                     st.rerun()
                 else:
                     st.caption("샘플 목표 파일을 찾지 못했어요.")
@@ -4264,6 +4720,7 @@ div[class*="st-key-stop-run-"] button:hover {
     handle_google_oauth_callback()
     restore_auth_session_if_possible()
     restore_user_preferences_if_possible()
+    restore_goal_document_if_possible()
     stale_permission_status = (
         st.session_state.get("supabase_status") == "Supabase 복원 실패: PermissionError"
     )
