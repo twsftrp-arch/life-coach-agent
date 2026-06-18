@@ -1415,6 +1415,18 @@ def format_saved_session_label(item: dict[str, object]) -> str:
     return f"{title} · {date_label}" if date_label else title
 
 
+def saved_session_title(item: dict[str, object], max_chars: int = 34) -> str:
+    title = str(item.get("title") or "").strip() or "제목 없는 대화"
+    if len(title) > max_chars:
+        return f"{title[: max_chars - 3]}..."
+    return title
+
+
+def saved_session_date(item: dict[str, object]) -> str:
+    updated_at = str(item.get("updated_at") or item.get("created_at") or "")
+    return updated_at[:10] if updated_at else ""
+
+
 def supabase_load_messages(session_key: str) -> list[dict[str, object]]:
     filter_value = quote_plus(session_key)
     session_response = supabase_request(
@@ -3246,7 +3258,7 @@ def render_user_session_list() -> None:
     if not user_id:
         return
 
-    with st.expander("내 대화", expanded=True):
+    with st.expander("대화 기록", expanded=True):
         try:
             sessions = supabase_list_user_sessions(user_id)
         except Exception as exc:
@@ -3258,54 +3270,69 @@ def render_user_session_list() -> None:
             return
 
         current_session_key = str(st.session_state.get("chat_session_key") or "")
-        for index, item in enumerate(sessions):
-            session_key = str(item.get("session_key") or "")
-            if not session_key:
-                continue
-            label = format_saved_session_label(item)
-            is_current = session_key == current_session_key
+        current_item = next(
+            (
+                item
+                for item in sessions
+                if str(item.get("session_key") or "") == current_session_key
+            ),
+            None,
+        )
 
-            if is_current:
-                st.caption(f"현재 대화: {label}")
-                title_value = str(item.get("title") or "").strip()
+        st.caption("현재 대화")
+        if current_item:
+            current_title = saved_session_title(current_item)
+            current_date = saved_session_date(current_item)
+            st.markdown(f"**{current_title}**")
+            if current_date:
+                st.caption(f"최근 수정: {current_date}")
+
+            session_key = current_session_key
+            manage_current = st.toggle(
+                "현재 대화 관리",
+                key=f"manage-session-{session_key[-8:]}",
+            )
+            if manage_current:
+                title_value = str(current_item.get("title") or "").strip()
                 updated_title = st.text_input(
-                    "대화 이름",
+                    "대화 이름 변경",
                     value=title_value,
                     placeholder="대화 이름",
                     key=f"session-title-{session_key[-8:]}",
-                    label_visibility="collapsed",
                 )
-                rename_col, delete_col = st.columns(2, gap="small")
+                if st.button(
+                    "이름 저장",
+                    key=f"rename-session-{session_key[-8:]}",
+                    use_container_width=True,
+                ):
+                    try:
+                        supabase_update_session_title(
+                            session_key,
+                            user_id,
+                            updated_title,
+                        )
+                        st.session_state.supabase_status = "대화 이름 저장됨"
+                    except Exception as exc:
+                        st.session_state.supabase_status = (
+                            f"대화 이름 저장 실패: {exc.__class__.__name__}"
+                        )
+                    st.rerun()
+
+                render_share_controls(session_key, user_id)
+
                 confirm_key = f"confirm-delete-{session_key}"
-                with rename_col:
-                    if st.session_state.get(confirm_key):
+                if st.session_state.get(confirm_key):
+                    st.warning("삭제하면 이 대화는 복구할 수 없습니다.")
+                    cancel_col, delete_col = st.columns(2, gap="small")
+                    with cancel_col:
                         if st.button(
-                            "삭제 취소",
+                            "취소",
                             key=f"cancel-delete-session-{session_key[-8:]}",
                             use_container_width=True,
                         ):
                             del st.session_state[confirm_key]
                             st.rerun()
-                    else:
-                        if st.button(
-                            "이름 저장",
-                            key=f"rename-session-{session_key[-8:]}",
-                            use_container_width=True,
-                        ):
-                            try:
-                                supabase_update_session_title(
-                                    session_key,
-                                    user_id,
-                                    updated_title,
-                                )
-                                st.session_state.supabase_status = "대화 이름 저장됨"
-                            except Exception as exc:
-                                st.session_state.supabase_status = (
-                                    f"대화 이름 저장 실패: {exc.__class__.__name__}"
-                                )
-                            st.rerun()
-                with delete_col:
-                    if st.session_state.get(confirm_key):
+                    with delete_col:
                         if st.button(
                             "삭제 확정",
                             key=f"delete-session-confirm-{session_key[-8:]}",
@@ -3325,18 +3352,34 @@ def render_user_session_list() -> None:
                             if deleted:
                                 reset_conversation()
                             st.rerun()
-                    elif st.button(
-                        "삭제",
-                        key=f"delete-session-{session_key[-8:]}",
-                        use_container_width=True,
-                    ):
-                        st.session_state[confirm_key] = True
-                        st.rerun()
-                render_share_controls(session_key, user_id)
-                continue
+                elif st.button(
+                    "대화 삭제",
+                    key=f"delete-session-{session_key[-8:]}",
+                    use_container_width=True,
+                ):
+                    st.session_state[confirm_key] = True
+                    st.rerun()
+        else:
+            st.caption("현재 대화는 아직 저장 전입니다.")
 
+        other_sessions = [
+            item
+            for item in sessions
+            if str(item.get("session_key") or "") != current_session_key
+        ]
+        st.divider()
+        st.caption("다른 대화 열기")
+        if not other_sessions:
+            st.caption("다른 저장된 대화가 없습니다.")
+            return
+
+        for index, item in enumerate(other_sessions):
+            session_key = str(item.get("session_key") or "")
+            if not session_key:
+                continue
+            label = format_saved_session_label(item)
             if st.button(
-                label,
+                f"열기: {label}",
                 key=f"saved-session-{index}-{session_key[-8:]}",
                 use_container_width=True,
             ):
