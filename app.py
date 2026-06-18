@@ -81,6 +81,11 @@ THINKING_MODES: dict[str, dict[str, str | None]] = {
         "effort": "xhigh",
     },
 }
+THINKING_BUTTON_LABELS = {
+    "fast": "빠름",
+    "high": "깊게",
+    "xhigh": "최대",
+}
 COACHING_STYLES: dict[str, dict[str, str]] = {
     "balanced": {
         "label": "균형",
@@ -4405,10 +4410,9 @@ def current_prompt_settings() -> tuple[str, str]:
     model = st.session_state.get("response-model-select") or configured_model
     if model not in SUPPORTED_MODELS:
         model = configured_model
-    thinking = normalize_thinking_mode(str(
-        st.session_state.get("response-thinking-mode-select")
-        or configured_thinking
-    ))
+    thinking = normalize_thinking_mode(
+        str(st.session_state.get("response_thinking_mode") or configured_thinking)
+    )
     return str(model), thinking
 
 
@@ -4424,14 +4428,22 @@ def render_response_settings_panel() -> None:
             key="response-model-select",
             width="stretch",
         )
-        thinking_mode = st.selectbox(
-            "사고 모드",
-            options=list(THINKING_MODES.keys()),
-            index=list(THINKING_MODES.keys()).index(configured_thinking),
-            format_func=thinking_mode_label,
-            key="response-thinking-mode-select",
-            width="stretch",
-        )
+        st.caption("사고 모드")
+        thinking_columns = st.columns(3, gap="small")
+        thinking_mode = configured_thinking
+        for option, column in zip(THINKING_MODES.keys(), thinking_columns):
+            button_key = (
+                f"thinking-mode-option-"
+                f"{option}-{'selected' if option == thinking_mode else 'idle'}"
+            )
+            with column:
+                if st.button(
+                    THINKING_BUTTON_LABELS.get(option, thinking_mode_label(option)),
+                    key=button_key,
+                    use_container_width=True,
+                ):
+                    st.session_state.response_thinking_mode = option
+                    st.rerun()
         st.caption(f"현재 설정: {model_label(model)} · {thinking_mode_label(thinking_mode)}")
 
 
@@ -4805,6 +4817,17 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
   line-height: 1.25;
   margin-top: 0.18rem;
   overflow-wrap: anywhere;
+}
+div[class*="st-key-thinking-mode-option-"][class*="-selected"] button {
+  background: rgba(46, 134, 222, 0.12);
+  border-color: rgba(46, 134, 222, 0.55);
+  color: #1d4ed8;
+  font-weight: 700;
+}
+div[class*="st-key-thinking-mode-option-"] button {
+  min-height: 2.25rem;
+  padding-left: 0.2rem;
+  padding-right: 0.2rem;
 }
 [data-testid="stChatInput"] textarea,
 [data-baseweb="base-input"] textarea {
