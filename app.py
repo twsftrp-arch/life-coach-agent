@@ -3764,7 +3764,7 @@ a[href*="streamlit.io/"] {
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
-  padding-bottom: 34rem;
+  padding-bottom: 18rem;
 }
 [data-testid="stBottom"] {
   padding-bottom: 3.2rem;
@@ -3842,10 +3842,10 @@ div[class*="st-key-thinking-mode-select"] {
   z-index: 9980;
 }
 div[class*="st-key-thinking-mode-select"] {
-  bottom: 16.5rem;
+  bottom: 0.8rem;
 }
 div[class*="st-key-model-select"] {
-  bottom: 22rem;
+  bottom: 3.65rem;
 }
 div[class*="st-key-model-select"] label,
 div[class*="st-key-thinking-mode-select"] label {
