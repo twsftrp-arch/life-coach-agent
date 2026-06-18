@@ -52,8 +52,9 @@ CUSTOM_INSTRUCTIONS_MAX_CHARS = 1200
 SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
+OAUTH_STATE_QUERY_PARAM = "oauth_state"
 OAUTH_STATE_TTL_MINUTES = 10
-OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v7-explicit-oauth-state"
+OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v8-redirect-oauth-state"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
@@ -1161,7 +1162,10 @@ def build_google_oauth_url() -> str | None:
     code_verifier = make_pkce_code_verifier()
     code_challenge = make_pkce_code_challenge(code_verifier)
     oauth_state = supabase_store_oauth_state(chat_session_key, code_verifier)
-    redirect_to = f"{read_app_base_url()}/?{urlencode({AUTH_CALLBACK_QUERY_PARAM: 'callback'})}"
+    redirect_to = f"{read_app_base_url()}/?{urlencode({
+        AUTH_CALLBACK_QUERY_PARAM: 'callback',
+        OAUTH_STATE_QUERY_PARAM: oauth_state,
+    })}"
     params = urlencode(
         {
             "provider": "google",
@@ -1219,7 +1223,7 @@ def handle_google_oauth_callback() -> bool:
     if not auth_code:
         return False
 
-    state = get_query_value("state")
+    state = get_query_value(OAUTH_STATE_QUERY_PARAM) or get_query_value("state")
     try:
         state_row = supabase_load_oauth_state(state, chat_session_key)
         if not state_row:
