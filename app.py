@@ -330,8 +330,10 @@ Your job:
   practical steps the user can try today.
 - Mention useful source names or URLs briefly when search results are provided.
 - If a generated image is described in the context, the app already displays it
-  to the user. Briefly celebrate or describe what it depicts in Korean; do NOT
-  paste the image URL into your answer.
+  above your answer. Briefly describe what is already shown in Korean; do NOT
+  paste the image URL into your answer. Do not say you will create, generate,
+  prepare, or show an image later. Use completed language such as "위 이미지에
+  ...를 담았어요" or "이미지에는 ...가 보입니다."
 - Format every source as a Markdown link, for example
   [source name](https://example.com). Do not leave source URLs as plain text.
 - Do not present yourself as a therapist, doctor, or medical professional.
@@ -3674,27 +3676,10 @@ async def run_search_then_stream_answer(
     if image_placeholder is not None and search_evidence.get("images"):
         image_started = time.perf_counter()
         images = search_evidence.get("images")
-        image_count = len(images) if isinstance(images, list) else 1
-        with image_placeholder.container():
-            render_image_generation_placeholder(image_count)
-        image_task = asyncio.create_task(
-            asyncio.to_thread(
-                prepare_generated_images_for_display,
-                images,
-            )
-        )
-        while not image_task.done():
-            ensure_not_stopped(stop_event)
-            render_status_message(
-                status_placeholder,
-                "이미지 완성 대기 중...",
-                time.perf_counter() - image_started,
-            )
-            await asyncio.sleep(0.25)
-        display_images = await image_task
+        display_images = images if isinstance(images, list) else []
         render_status_message(
             status_placeholder,
-            "이미지 완성 대기 중...",
+            "이미지 표시 중...",
             time.perf_counter() - image_started,
         )
         with image_placeholder.container():
@@ -3706,7 +3691,10 @@ async def run_search_then_stream_answer(
         "[참고 자료]\n"
         f"{search_context or '참고할 개인 목표/검색 결과를 가져오지 못했습니다.'}\n\n"
         "위 개인 목표/기록과 검색 결과를 바탕으로, 사용자의 목표와 최근 진행 상황을 "
-        "반영해 바로 실행 가능한 라이프 코칭 답변을 해 주세요."
+        "반영해 바로 실행 가능한 라이프 코칭 답변을 해 주세요. "
+        "이미지 자료가 있다면 그 이미지는 이미 답변 위에 표시된 상태입니다. "
+        "'이미지를 만들어드릴게요', '생성해드릴게요', '곧 보여드릴게요'처럼 "
+        "미래에 생성할 것처럼 말하지 말고, 이미 표시된 이미지를 짧게 설명하세요."
     )
 
     def render_activity(events: list[dict[str, object]]) -> None:
@@ -3774,7 +3762,7 @@ a[href*="streamlit.io/"] {
   min-height: 42px;
   padding: 0.55rem 0.75rem;
   position: fixed;
-  bottom: 30.2rem;
+  bottom: 10.25rem;
   left: auto;
   right: auto;
   transform: none;
@@ -3898,7 +3886,7 @@ div[class*="st-key-stop-run-"] button:hover {
     padding-bottom: 15.5rem;
   }
   .run-status-box {
-    bottom: 16rem;
+    bottom: 10.25rem;
     width: 46rem;
   }
   div[class*="st-key-model-select"],
