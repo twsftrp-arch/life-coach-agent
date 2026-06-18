@@ -3672,7 +3672,8 @@ def extract_uploaded_goal_text(uploaded_file) -> str:
 
 def render_goals_panel() -> None:
     with st.expander("개인 목표 파일", expanded=False):
-        st.caption("TXT, MD, 텍스트 PDF만 지원합니다. 스캔 PDF는 읽지 못해요.")
+        st.caption("목표 파일 1개, 최대 10MB · TXT/MD/텍스트 PDF")
+        st.caption("스캔 PDF는 읽지 못해요. OCR은 지원하지 않습니다.")
         nonce = int(st.session_state.get("goals_uploader_nonce", 0))
         uploaded = st.file_uploader(
             "목표 파일 업로드",
@@ -4067,6 +4068,9 @@ a[href*="streamlit.io/cloud"],
 a[href*="streamlit.io/"] {
   display: none !important;
   visibility: hidden !important;
+}
+[data-testid="stFileUploaderDropzoneInstructions"] {
+  display: none !important;
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
