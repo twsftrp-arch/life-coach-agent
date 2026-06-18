@@ -53,7 +53,7 @@ SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
 OAUTH_STATE_TTL_MINUTES = 10
-OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v3"
+OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v4-select-account"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
@@ -1128,6 +1128,7 @@ def build_google_oauth_url() -> str | None:
             "redirect_to": redirect_to,
             "code_challenge": code_challenge,
             "code_challenge_method": "s256",
+            "prompt": "select_account",
         }
     )
     login_url = f"{config['url']}/auth/v1/authorize?{params}"
