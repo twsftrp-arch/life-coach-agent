@@ -2355,7 +2355,7 @@ def render_generated_images(evidence: dict[str, object] | None) -> None:
     <div style="width:34px;height:34px;border:3px solid #2a2e37;
          border-top-color:#2e86de;border-radius:50%;
          animation:imgspin 0.8s linear infinite;"></div>
-    <div style="font-size:13px;">🎨 이미지 생성 중...</div>
+    <div style="font-size:13px;">🎨 이미지 불러오는 중...</div>
   </div>
   <img src="{safe_url}" alt="생성된 이미지"
        style="width:100%;height:100%;object-fit:contain;opacity:{image_opacity};
@@ -2374,7 +2374,7 @@ def render_generated_images(evidence: dict[str, object] | None) -> None:
 
 
 def render_image_generation_placeholder(image_count: int = 1) -> None:
-    count_text = f"{image_count}장 생성 중..." if image_count > 1 else "이미지 생성 중..."
+    count_text = f"{image_count}장 준비 중..." if image_count > 1 else "이미지 준비 중..."
     components.html(
         f"""
 <div style="width:100%;max-width:512px;height:512px;position:relative;
@@ -2386,7 +2386,7 @@ def render_image_generation_placeholder(image_count: int = 1) -> None:
          border-top-color:#2e86de;border-radius:50%;
          animation:imgspin 0.8s linear infinite;"></div>
     <div style="font-size:14px;font-weight:600;">🎨 {count_text}</div>
-    <div style="font-size:12px;color:#8a92a0;">완성되면 이 자리에서 바로 보여드릴게요</div>
+    <div style="font-size:12px;color:#8a92a0;">이미지가 준비되면 답변을 이어갈게요</div>
   </div>
 </div>
 <div style="color:#8a92a0;font-size:12px;margin-top:6px;
@@ -3677,9 +3677,27 @@ async def run_search_then_stream_answer(
         image_started = time.perf_counter()
         images = search_evidence.get("images")
         display_images = images if isinstance(images, list) else []
+        with image_placeholder.container():
+            render_image_generation_placeholder(len(display_images))
+
+        image_task = asyncio.create_task(
+            asyncio.to_thread(prepare_generated_images_for_display, display_images)
+        )
+        while not image_task.done():
+            ensure_not_stopped(stop_event)
+            render_status_message(
+                status_placeholder,
+                "이미지 준비 중...",
+                time.perf_counter() - image_started,
+            )
+            await asyncio.sleep(0.25)
+
+        prepared_images = image_task.result()
+        if prepared_images:
+            display_images = prepared_images
         render_status_message(
             status_placeholder,
-            "이미지 표시 중...",
+            "이미지 표시 완료",
             time.perf_counter() - image_started,
         )
         with image_placeholder.container():
@@ -3763,10 +3781,10 @@ a[href*="streamlit.io/"] {
   padding: 0.55rem 0.75rem;
   position: fixed;
   bottom: 10.25rem;
-  left: auto;
+  left: 50%;
   right: auto;
-  transform: none;
-  width: calc(100% - 2rem);
+  transform: translateX(-50%);
+  width: min(44rem, calc(100vw - 2rem));
   z-index: 10020;
 }
 .run-status-box code {
@@ -3887,7 +3905,10 @@ div[class*="st-key-stop-run-"] button:hover {
   }
   .run-status-box {
     bottom: 10.25rem;
-    width: 46rem;
+    width: min(44rem, calc(100vw - 2rem));
+  }
+  body:has([data-testid="stSidebar"][aria-expanded="true"]) .run-status-box {
+    left: calc(50% + 150px);
   }
   div[class*="st-key-model-select"],
   div[class*="st-key-thinking-mode-select"] {
