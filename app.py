@@ -3613,10 +3613,22 @@ def render_auth_controls() -> None:
     if auth_status and "bad_oauth_state" in str(auth_status):
         auth_status = "Google 로그인 링크를 갱신했어요. 다시 로그인해 주세요."
         st.session_state.auth_status = auth_status
+    visible_auth_status = str(auth_status or "").strip()
+    if visible_auth_status in {"Google 로그인: 복원됨", "Google 로그인: 연결됨"}:
+        visible_auth_status = ""
 
     if user:
         display_name = user.get("email") or user.get("name") or "Google user"
-        st.caption(f"Google 로그인: {display_name}")
+        safe_display_name = html.escape(str(display_name), quote=True)
+        st.markdown(
+            f"""
+<div class="auth-user-line">
+  <span class="auth-user-badge">로그인됨</span>
+  <span class="auth-user-email">{safe_display_name}</span>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
         if st.button("로그아웃", use_container_width=True):
             refresh_token = st.session_state.get("auth_refresh_token")
             if refresh_token:
@@ -3664,8 +3676,8 @@ def render_auth_controls() -> None:
         else:
             st.caption("Google 로그인: Supabase 설정 필요")
 
-    if auth_status:
-        st.caption(str(auth_status))
+    if visible_auth_status:
+        st.caption(visible_auth_status)
 
 
 def render_share_controls(session_key: str, user_id: str) -> None:
@@ -4610,6 +4622,31 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
   border-color: rgba(46, 134, 222, 0.55);
   color: #1d4ed8;
   text-decoration: none;
+}
+.auth-user-line {
+  align-items: center;
+  display: flex;
+  gap: 0.45rem;
+  margin: 0.2rem 0 0.55rem;
+  min-width: 0;
+}
+.auth-user-badge {
+  background: rgba(22, 163, 74, 0.1);
+  border: 1px solid rgba(22, 163, 74, 0.2);
+  border-radius: 999px;
+  color: #15803d;
+  flex: 0 0 auto;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0.28rem 0.48rem;
+}
+.auth-user-email {
+  color: rgba(49, 51, 63, 0.72);
+  font-size: 0.82rem;
+  line-height: 1.2;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 div[class*="st-key-model-select"],
 div[class*="st-key-thinking-mode-select"] {
