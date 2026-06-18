@@ -53,10 +53,12 @@ SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
 OAUTH_STATE_QUERY_PARAM = "oauth_state"
+AUTH_RESTORE_QUERY_PARAM = "auth_restore"
 OAUTH_STATE_TTL_MINUTES = 10
 OAUTH_URL_CACHE_VERSION = "dynamic-app-base-url-v9-redirect-state-only"
 AUTH_COOKIE_NAME = "life_coach_auth"
 AUTH_SESSION_DAYS = 30
+LOCAL_TIMEZONE = timezone(timedelta(hours=9))
 MAX_SEARCH_CALLS_PER_MESSAGE = 2
 THINKING_MODES: dict[str, dict[str, str | None]] = {
     "fast": {
@@ -535,6 +537,15 @@ def get_auth_cookie_token() -> str | None:
     return token
 
 
+def get_auth_restore_token() -> str | None:
+    token = get_query_value(AUTH_RESTORE_QUERY_PARAM)
+    if not isinstance(token, str):
+        return None
+    if not re.fullmatch(r"[A-Za-z0-9_-]{40,160}", token):
+        return None
+    return token
+
+
 def supabase_request(
     method: str,
     path: str,
@@ -838,7 +849,14 @@ def restore_auth_session_if_possible() -> None:
         return
 
     refresh_token = st.session_state.get("auth_refresh_token")
-    app_auth_token = st.session_state.get("auth_cookie_token") or get_auth_cookie_token()
+    query_auth_token = get_auth_restore_token()
+    app_auth_token = (
+        st.session_state.get("auth_cookie_token")
+        or get_auth_cookie_token()
+        or query_auth_token
+    )
+    if query_auth_token:
+        clear_oauth_query_params()
     if not refresh_token and app_auth_token:
         try:
             app_session = supabase_load_app_auth_session(str(app_auth_token))
@@ -849,6 +867,8 @@ def restore_auth_session_if_possible() -> None:
             refresh_token = None
 
     if not refresh_token:
+        if query_auth_token:
+            st.session_state.pending_auth_cookie_delete = True
         return
 
     try:
@@ -860,6 +880,7 @@ def restore_auth_session_if_possible() -> None:
                 auth_user["id"],
                 str(auth_response.get("refresh_token") or ""),
             )
+            st.session_state.pending_auth_cookie_token = str(app_auth_token)
         session_key = st.session_state.get("chat_session_key")
         if session_key:
             try:
@@ -977,16 +998,25 @@ def render_auth_cookie_scripts() -> None:
             f"Max-Age={AUTH_SESSION_DAYS * 86400}; Path=/; SameSite=Lax{secure_attr}"
         )
         cookie_json = json.dumps(cookie_value).replace("<", "\\u003c")
+        storage_key_json = json.dumps(AUTH_COOKIE_NAME).replace("<", "\\u003c")
+        token_value_json = json.dumps(str(pending_token)).replace("<", "\\u003c")
         components.html(
             f"""
 <script>
 (function () {{
   const cookieValue = {cookie_json};
+  const storageKey = {storage_key_json};
+  const tokenValue = {token_value_json};
   const targets = [window, window.parent, window.top];
   targets.forEach((target) => {{
     try {{
       if (target && target.document) {{
         target.document.cookie = cookieValue;
+      }}
+    }} catch (error) {{}}
+    try {{
+      if (target && target.localStorage) {{
+        target.localStorage.setItem(storageKey, tokenValue);
       }}
     }} catch (error) {{}}
   }});
@@ -1001,16 +1031,23 @@ def render_auth_cookie_scripts() -> None:
     if pending_delete:
         cookie_value = f"{AUTH_COOKIE_NAME}=; Max-Age=0; Path=/; SameSite=Lax{secure_attr}"
         cookie_json = json.dumps(cookie_value).replace("<", "\\u003c")
+        storage_key_json = json.dumps(AUTH_COOKIE_NAME).replace("<", "\\u003c")
         components.html(
             f"""
 <script>
 (function () {{
   const cookieValue = {cookie_json};
+  const storageKey = {storage_key_json};
   const targets = [window, window.parent, window.top];
   targets.forEach((target) => {{
     try {{
       if (target && target.document) {{
         target.document.cookie = cookieValue;
+      }}
+    }} catch (error) {{}}
+    try {{
+      if (target && target.localStorage) {{
+        target.localStorage.removeItem(storageKey);
       }}
     }} catch (error) {{}}
   }});
@@ -1020,6 +1057,63 @@ def render_auth_cookie_scripts() -> None:
             height=0,
         )
         del st.session_state.pending_auth_cookie_delete
+
+
+def render_auth_restore_script() -> None:
+    if current_auth_user():
+        return
+    if st.session_state.get("pending_auth_cookie_delete"):
+        return
+    if get_query_value("code") or get_query_value(AUTH_RESTORE_QUERY_PARAM):
+        return
+
+    storage_key_json = json.dumps(AUTH_COOKIE_NAME).replace("<", "\\u003c")
+    restore_param_json = json.dumps(AUTH_RESTORE_QUERY_PARAM).replace("<", "\\u003c")
+    components.html(
+        f"""
+<script>
+(function () {{
+  const storageKey = {storage_key_json};
+  const restoreParam = {restore_param_json};
+  const tokenPattern = /^[A-Za-z0-9_-]{{40,160}}$/;
+
+  const readCookie = (target) => {{
+    try {{
+      const match = target.document.cookie.match(new RegExp('(?:^|; )' + storageKey + '=([^;]+)'));
+      return match ? decodeURIComponent(match[1]) : "";
+    }} catch (error) {{
+      return "";
+    }}
+  }};
+
+  const windows = [window.parent, window.top, window];
+  for (const target of windows) {{
+    try {{
+      if (!target || !target.location) {{
+        continue;
+      }}
+      const token = (
+        (target.localStorage && target.localStorage.getItem(storageKey)) ||
+        readCookie(target) ||
+        ""
+      );
+      if (!tokenPattern.test(token)) {{
+        continue;
+      }}
+      const url = new URL(target.location.href);
+      if (url.searchParams.get(restoreParam) === token) {{
+        return;
+      }}
+      url.searchParams.set(restoreParam, token);
+      target.location.replace(url.toString());
+      return;
+    }} catch (error) {{}}
+  }}
+}})();
+</script>
+""",
+        height=0,
+    )
 
 
 def render_oauth_url_cleanup_script() -> None:
@@ -1324,7 +1418,10 @@ def supabase_ensure_session(session_key: str, title: str | None = None) -> str:
 
 
 def supabase_attach_session_to_user(session_key: str, user_id: str) -> None:
-    supabase_ensure_session(session_key)
+    existing_row = supabase_get_session_row(session_key)
+    if not existing_row:
+        return
+    ensure_session_owner_access(existing_row)
     supabase_request(
         "PATCH",
         f"life_coach_sessions?session_key=eq.{quote_plus(session_key)}",
@@ -1345,7 +1442,11 @@ def supabase_list_user_sessions(user_id: str, limit: int = 20) -> list[dict[str,
     response = supabase_request("GET", f"life_coach_sessions?{params}")
     if not isinstance(response, list):
         return []
-    return [item for item in response if isinstance(item, dict)]
+    return [
+        item
+        for item in response
+        if isinstance(item, dict) and str(item.get("title") or "").strip()
+    ]
 
 
 def supabase_update_session_title(
@@ -1425,9 +1526,16 @@ def saved_session_timestamp(item: dict[str, object]) -> str:
     updated_at = str(item.get("updated_at") or item.get("created_at") or "")
     if not updated_at:
         return ""
-    normalized = updated_at.replace("Z", "").replace("+00:00", "")
-    if "T" in normalized and len(normalized) >= 16:
-        return normalized[:16].replace("T", " ")
+    try:
+        normalized = updated_at.replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(LOCAL_TIMEZONE).strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        normalized = updated_at.replace("Z", "").replace("+00:00", "")
+        if "T" in normalized and len(normalized) >= 16:
+            return normalized[:16].replace("T", " ")
     return updated_at[:10]
 
 
@@ -2925,15 +3033,7 @@ def reset_conversation() -> None:
         str(DB_PATH),
     )
     st.session_state.messages = [new_conversation_greeting()]
-    st.session_state.supabase_status = "새 Supabase 채팅 세션"
-    user_id = current_auth_user_id()
-    if user_id:
-        try:
-            supabase_attach_session_to_user(st.session_state.chat_session_key, user_id)
-        except Exception as exc:
-            st.session_state.supabase_status = (
-                f"새 세션 사용자 연결 실패: {exc.__class__.__name__}"
-            )
+    st.session_state.supabase_status = "새 대화: 첫 메시지부터 저장됩니다"
 
 
 def reset_agent_session_only() -> None:
@@ -3383,7 +3483,7 @@ def render_user_session_list() -> None:
                 continue
             label = format_saved_session_label(item)
             if st.button(
-                f"열기: {label}",
+                label,
                 key=f"saved-session-{index}-{session_key[-8:]}",
                 use_container_width=True,
             ):
@@ -4071,6 +4171,7 @@ div[class*="st-key-stop-run-"] button:hover {
     restore_messages_if_needed(
         force=bool(current_auth_user_id() and stale_permission_status)
     )
+    render_auth_restore_script()
     render_auth_cookie_scripts()
     render_oauth_url_cleanup_script()
 
