@@ -129,6 +129,23 @@ POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt/"
 IMAGE_WIDTH = 1024
 IMAGE_HEIGHT = 1024
 MAX_IMAGE_CALLS_PER_MESSAGE = 2
+IMAGE_REQUEST_HINTS = (
+    "비전보드",
+    "비전 보드",
+    "비전박스",
+    "비전 박스",
+    "이미지",
+    "그려",
+    "그림",
+    "포스터",
+    "시각화",
+    "보드",
+    "vision board",
+    "image",
+    "poster",
+    "draw",
+    "visual",
+)
 MOVIE_AGENT_ENV_PATH = Path.home() / "Documents" / "movie-agent" / ".env"
 KST = timezone(timedelta(hours=9), "KST")
 SEARCH_TIMINGS: contextvars.ContextVar[list[dict[str, object]] | None] = (
@@ -192,6 +209,9 @@ WEB_SEARCH_HINTS = (
     "이미지",
     "비전보드",
     "비전 보드",
+    "비전박스",
+    "비전 박스",
+    "시각화",
     "포스터",
     "축하",
     "달성",
@@ -275,8 +295,9 @@ Your job:
 - Then, when current or evidence-informed tips would help, call search_web
   once. Call search_web a second time only for a clearly different angle, such
   as practical Korean tips plus evidence-oriented English sources.
-- When the user wants a vision board, motivational poster, celebration image,
-  or any visual, call generate_image with a vivid ENGLISH prompt.
+- When the user wants a vision board, "비전보드", "비전박스",
+  motivational poster, celebration image, or any visual, call generate_image
+  with a vivid ENGLISH prompt.
   * Vision board: compose a COLLAGE that combines MULTIPLE goals you found
     (e.g. exercise, study/reading, sleep, travel) as distinct visual sections
     in a single board, like a moodboard grid.
@@ -980,8 +1001,8 @@ def render_browser_head_tags() -> None:
 
   const candidateDocuments = [getDocument(window.parent), getDocument(window.top)].filter(Boolean);
 
-  const updateDocument = (doc) => {
-    doc.title = appName;
+    const updateDocument = (doc) => {
+      doc.title = appName;
 
     doc
       .querySelectorAll('link[rel="manifest"], link[rel="icon"], link[rel="alternate icon"], link[rel="apple-touch-icon"]')
@@ -1020,8 +1041,8 @@ def render_browser_head_tags() -> None:
 
     upsertLink("icon", iconHref, { sizes: "192x192", type: "image/png" });
     upsertMeta("theme-color", "#2563eb");
-    upsertStyle(
-      "life-coach-cloud-chrome-hide",
+      upsertStyle(
+        "life-coach-cloud-chrome-hide",
       `
         a[href*="streamlit.io/cloud"],
         a[href*="share.streamlit.io/user/"],
@@ -1034,8 +1055,8 @@ def render_browser_head_tags() -> None:
           pointer-events: none !important;
         }
       `
-    );
-  };
+      );
+    };
 
   candidateDocuments.forEach((doc) => {
     try {
@@ -1790,6 +1811,43 @@ def search_goals_in_text(goals_text: str, query: str) -> str:
     return "\n\n---\n\n".join(top_chunks)[:4000]
 
 
+def prompt_likely_needs_image(prompt: str) -> bool:
+    normalized = prompt.lower()
+    return any(hint in normalized for hint in IMAGE_REQUEST_HINTS)
+
+
+def build_pollinations_image_result(prompt: str) -> dict[str, str]:
+    clean = " ".join(prompt.split()).strip()
+    seed = int(time.time() * 1000) % 100000
+    params = urlencode(
+        {
+            "width": IMAGE_WIDTH,
+            "height": IMAGE_HEIGHT,
+            "nologo": "true",
+            "model": "flux",
+            "seed": seed,
+        }
+    )
+    url = f"{POLLINATIONS_BASE_URL}{quote(clean, safe='')}?{params}"
+    return {"prompt": clean, "url": url}
+
+
+def default_vision_board_prompt(user_prompt: str) -> str:
+    clean_user_prompt = " ".join(user_prompt.split()).strip()
+    return (
+        "A beautiful inspiring personal vision board collage in a clean "
+        "modern moodboard grid. Include multiple life goal sections with "
+        "symbolic scenes only: fitness and health with running shoes and "
+        "dumbbells, learning and career growth with books and a laptop, "
+        "calm sleep and routines with moonlight and a clock, financial "
+        "growth with simple abstract coins and upward shapes, relationships "
+        "and travel with warm friends, mountains, and an airplane. Soft "
+        "natural light, polished editorial style, optimistic but not cheesy. "
+        f"User intent: {clean_user_prompt}. No text, no words, no letters, "
+        "no captions anywhere in the image."
+    )
+
+
 def make_search_goals_tool(goals_text: str):
     """Build a file-search tool bound to the current user's goal document."""
 
@@ -1850,24 +1908,14 @@ def generate_image(prompt: str) -> str:
 
     started = time.perf_counter()
     append_run_event(f"`generate_image` tool 호출: {clean[:50]}")
-    seed = int(time.time() * 1000) % 100000
-    params = urlencode(
-        {
-            "width": IMAGE_WIDTH,
-            "height": IMAGE_HEIGHT,
-            "nologo": "true",
-            "model": "flux",
-            "seed": seed,
-        }
-    )
-    url = f"{POLLINATIONS_BASE_URL}{quote(clean, safe='')}?{params}"
+    image_result = build_pollinations_image_result(clean)
     append_run_event(
         f"`generate_image` tool 완료: {format_seconds(time.perf_counter() - started)}"
     )
 
     images = IMAGE_RESULTS.get()
     if images is not None:
-        images.append({"prompt": clean, "url": url})
+        images.append(image_result)
 
     return (
         f"이미지를 생성했습니다 (프롬프트: {clean}). "
@@ -2289,11 +2337,113 @@ def render_generated_images(evidence: dict[str, object] | None) -> None:
         url = str(image.get("url") or "")
         if not url:
             continue
-        st.image(
-            url,
-            caption="🎨 Life Coach가 만든 이미지",
-            use_container_width=True,
+        display_url = str(image.get("display_url") or url)
+        embedded_image = display_url.startswith("data:")
+        spinner_display = "none" if embedded_image else "flex"
+        image_opacity = "1" if embedded_image else "0"
+        safe_url = html.escape(display_url, quote=True)
+        components.html(
+            f"""
+<div style="width:100%;max-width:512px;height:512px;position:relative;
+            background:#15171c;border-radius:10px;overflow:hidden;
+            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div id="img-spin" style="position:absolute;inset:0;display:{spinner_display};
+       flex-direction:column;align-items:center;justify-content:center;
+       gap:10px;color:#9aa3b2;">
+    <div style="width:34px;height:34px;border:3px solid #2a2e37;
+         border-top-color:#2e86de;border-radius:50%;
+         animation:imgspin 0.8s linear infinite;"></div>
+    <div style="font-size:13px;">🎨 이미지 생성 중...</div>
+  </div>
+  <img src="{safe_url}" alt="생성된 이미지"
+       style="width:100%;height:100%;object-fit:contain;opacity:{image_opacity};
+              transition:opacity .35s ease;"
+       onload="this.style.opacity=1;var s=document.getElementById('img-spin');if(s)s.style.display='none';"
+       onerror="var s=document.getElementById('img-spin');if(s)s.innerHTML='<div style=&quot;color:#e06c75;font-size:13px&quot;>이미지를 불러오지 못했어요</div>';" />
+</div>
+<div style="color:#8a92a0;font-size:12px;margin-top:6px;
+            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  🎨 Life Coach가 만든 이미지
+</div>
+<style>@keyframes imgspin {{ to {{ transform: rotate(360deg); }} }}</style>
+""",
+            height=560,
         )
+
+
+def render_image_generation_placeholder(image_count: int = 1) -> None:
+    count_text = f"{image_count}장 생성 중..." if image_count > 1 else "이미지 생성 중..."
+    components.html(
+        f"""
+<div style="width:100%;max-width:512px;height:512px;position:relative;
+            background:#15171c;border-radius:10px;overflow:hidden;
+            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  <div style="position:absolute;inset:0;display:flex;flex-direction:column;
+       align-items:center;justify-content:center;gap:12px;color:#d7dce5;">
+    <div style="width:38px;height:38px;border:3px solid #2a2e37;
+         border-top-color:#2e86de;border-radius:50%;
+         animation:imgspin 0.8s linear infinite;"></div>
+    <div style="font-size:14px;font-weight:600;">🎨 {count_text}</div>
+    <div style="font-size:12px;color:#8a92a0;">완성되면 이 자리에서 바로 보여드릴게요</div>
+  </div>
+</div>
+<div style="color:#8a92a0;font-size:12px;margin-top:6px;
+            font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+  🎨 Life Coach가 만드는 이미지
+</div>
+<style>@keyframes imgspin {{ to {{ transform: rotate(360deg); }} }}</style>
+""",
+        height=560,
+    )
+
+
+def fetch_image_data_url(url: str) -> str | None:
+    if not url:
+        return None
+
+    request = Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 (compatible; LifeCoachAgent/1.0)",
+        },
+    )
+    try:
+        with urlopen(request, timeout=18) as response:
+            content_type = (
+                response.headers.get("Content-Type", "image/jpeg")
+                .split(";", 1)[0]
+                .strip()
+                or "image/jpeg"
+            )
+            if not content_type.startswith("image/"):
+                return None
+            image_bytes = response.read()
+    except (OSError, URLError, HTTPError, TimeoutError):
+        return None
+
+    if not image_bytes:
+        return None
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def prepare_generated_images_for_display(
+    images: object,
+) -> list[dict[str, object]]:
+    if not isinstance(images, list):
+        return []
+
+    prepared: list[dict[str, object]] = []
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        display_image = dict(image)
+        url = str(display_image.get("url") or "")
+        data_url = fetch_image_data_url(url)
+        if data_url:
+            display_image["display_url"] = data_url
+        prepared.append(display_image)
+    return prepared
 
 
 def render_run_evidence(evidence: dict[str, object] | None) -> None:
@@ -2545,15 +2695,35 @@ async def run_agent_streamed(
             streamed_text += delta
             response_placeholder.markdown(f"{streamed_text}▌")
 
-        answer = linkify_plain_urls(str(result.final_output or streamed_text))
+        final_output_error: Exception | None = None
+        try:
+            final_output = result.final_output
+        except Exception as exc:
+            if not streamed_text:
+                raise
+            final_output = streamed_text
+            final_output_error = exc
+            append_run_event(
+                f"`result.final_output` 복구: {exc.__class__.__name__}"
+            )
+
+        answer = linkify_plain_urls(str(final_output or streamed_text))
         response_placeholder.markdown(answer)
         status_state["done"] = True
         await status_task
         status_placeholder.empty()
 
-        evidence = extract_run_evidence(result)
+        try:
+            evidence = extract_run_evidence(result)
+        except Exception as exc:
+            if final_output_error is None:
+                raise
+            evidence = {"searches": []}
+            append_run_event(f"실행 증거 복구: {exc.__class__.__name__}")
         evidence["total_seconds"] = time.perf_counter() - started
         evidence["streaming"] = True
+        if final_output_error is not None:
+            evidence["fallback_reason"] = final_output_error.__class__.__name__
         append_run_event("`Runner.run_streamed()` 완료")
         evidence["events"] = list(run_events)
         evidence = merge_search_timings(evidence, search_timings)
@@ -2809,6 +2979,13 @@ def run_search_for_streaming_answer(
                 {"prompt": img.get("prompt"), "url": img.get("url")}
                 for img in image_results
             ]
+        elif prompt_likely_needs_image(prompt):
+            append_run_event("이미지 요청 fallback: 앱에서 비전보드 이미지 생성")
+            fallback_image = build_pollinations_image_result(
+                default_vision_board_prompt(prompt)
+            )
+            image_results.append(fallback_image)
+            evidence["images"] = [fallback_image]
 
         context_sections: list[str] = []
         goal_parts = [
@@ -3483,6 +3660,7 @@ async def run_search_then_stream_answer(
     activity_placeholder,
     response_placeholder,
     status_placeholder,
+    image_placeholder=None,
     stop_event: threading.Event | None = None,
 ) -> tuple[str, dict[str, object]]:
     ensure_not_stopped(stop_event)
@@ -3493,6 +3671,34 @@ async def run_search_then_stream_answer(
         status_placeholder,
     )
     ensure_not_stopped(stop_event)
+    if image_placeholder is not None and search_evidence.get("images"):
+        image_started = time.perf_counter()
+        images = search_evidence.get("images")
+        image_count = len(images) if isinstance(images, list) else 1
+        with image_placeholder.container():
+            render_image_generation_placeholder(image_count)
+        image_task = asyncio.create_task(
+            asyncio.to_thread(
+                prepare_generated_images_for_display,
+                images,
+            )
+        )
+        while not image_task.done():
+            ensure_not_stopped(stop_event)
+            render_status_message(
+                status_placeholder,
+                "이미지 완성 대기 중...",
+                time.perf_counter() - image_started,
+            )
+            await asyncio.sleep(0.25)
+        display_images = await image_task
+        render_status_message(
+            status_placeholder,
+            "이미지 완성 대기 중...",
+            time.perf_counter() - image_started,
+        )
+        with image_placeholder.container():
+            render_generated_images({"images": display_images})
     render_status_message(status_placeholder, "답변 스트리밍 중...")
 
     augmented_prompt = (
@@ -3533,6 +3739,10 @@ def main() -> None:
     st.markdown(
         """
 <style>
+:root,
+body {
+  --lc-chat-input-lift: 0px;
+}
 footer,
 [data-testid="stDecoration"],
 [data-testid="stStatusWidget"],
@@ -3548,7 +3758,10 @@ a[href*="streamlit.io/"] {
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
-  padding-bottom: 13rem;
+  padding-bottom: 34rem;
+}
+[data-testid="stBottom"] {
+  padding-bottom: 3.2rem;
 }
 .run-status-box {
   align-items: center;
@@ -3557,14 +3770,14 @@ a[href*="streamlit.io/"] {
   border-radius: 6px;
   display: flex;
   gap: 0.55rem;
-  left: 50%;
   max-width: 46rem;
   min-height: 42px;
   padding: 0.55rem 0.75rem;
   position: fixed;
-  bottom: 12.85rem;
+  bottom: 30.2rem;
+  left: auto;
   right: auto;
-  transform: translateX(-50%);
+  transform: none;
   width: calc(100% - 2rem);
   z-index: 10020;
 }
@@ -3613,20 +3826,20 @@ div[class*="st-key-thinking-mode-select"] {
   border: 1px solid rgba(49, 51, 63, 0.16);
   border-radius: 6px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12);
-  left: 50%;
-  max-width: 46rem;
-  padding: 0.28rem 0.36rem;
+  max-width: none;
+  padding: 0.22rem 0.28rem;
   position: fixed;
-  right: auto;
-  transform: translateX(-50%);
+  left: 1rem;
+  right: 1rem;
+  transform: none;
   width: calc(100% - 2rem) !important;
   z-index: 9980;
 }
-div[class*="st-key-model-select"] {
-  bottom: 9.95rem;
-}
 div[class*="st-key-thinking-mode-select"] {
-  bottom: 7.35rem;
+  bottom: 16.5rem;
+}
+div[class*="st-key-model-select"] {
+  bottom: 22rem;
 }
 div[class*="st-key-model-select"] label,
 div[class*="st-key-thinking-mode-select"] label {
@@ -3634,19 +3847,35 @@ div[class*="st-key-thinking-mode-select"] label {
 }
 div[class*="st-key-model-select"] button,
 div[class*="st-key-thinking-mode-select"] button {
-  font-size: 0.78rem;
-  min-height: 30px;
-  padding: 0.25rem 0.45rem;
+  font-size: 0.72rem;
+  min-height: 28px;
+  padding: 0.2rem 0.32rem;
   white-space: nowrap;
 }
 [data-testid="stChatInput"] textarea,
 [data-baseweb="base-input"] textarea {
-  max-height: 4.5rem;
+  max-height: 6.75rem;
+  padding-right: 2.7rem;
+}
+[data-testid="stChatInput"] {
+  position: relative;
+}
+[data-testid="stChatInput"]
+  div:has(> button[data-testid="stChatInputSubmitButton"]),
+[data-testid="stChatInput"]
+  div:has(> button[aria-label="Submit"]),
+[data-testid="stChatInput"]
+  div:has(> button[aria-label="Send"]) {
+  bottom: 0;
+  height: 2rem !important;
+  position: absolute !important;
+  right: 0;
+  width: 2rem !important;
 }
 div[class*="st-key-stop-run-"] {
-  bottom: 4.1rem;
+  bottom: 26.8rem;
   position: fixed;
-  right: 5.25rem;
+  right: 1rem;
   width: 4.1rem;
   z-index: 10030;
 }
@@ -3664,20 +3893,36 @@ div[class*="st-key-stop-run-"] button:hover {
   color: #9f1239;
 }
 @media (min-width: 900px) {
-  body:has([data-testid="stSidebar"][aria-expanded="true"]) .run-status-box,
-  body:has([data-testid="stSidebar"][aria-expanded="true"]) div[class*="st-key-model-select"],
-  body:has([data-testid="stSidebar"][aria-expanded="true"]) div[class*="st-key-thinking-mode-select"] {
-    left: calc(50% + 150px);
+  [data-testid="stAppViewContainer"] .main .block-container,
+  [data-testid="stMainBlockContainer"] {
+    padding-bottom: 15.5rem;
   }
   .run-status-box {
+    bottom: 16rem;
     width: 46rem;
   }
   div[class*="st-key-model-select"],
   div[class*="st-key-thinking-mode-select"] {
-    width: 46rem !important;
+    bottom: 3.05rem;
+    left: auto;
+    max-width: 20.7rem;
+    right: auto;
+    width: 20.7rem !important;
   }
   div[class*="st-key-stop-run-"] {
-    right: calc((100vw - 46rem) / 2 + 5.25rem);
+    bottom: 7.2rem;
+    left: min(calc(50% + 22rem + 0.5rem), calc(100vw - 5.1rem));
+    right: auto;
+  }
+  body:has([data-testid="stSidebar"][aria-expanded="true"]) div[class*="st-key-stop-run-"] {
+    left: min(calc(50% + 150px + 22rem + 0.5rem), calc(100vw - 5.1rem));
+  }
+}
+@media (min-width: 900px) and (max-width: 1184px) {
+  body:has([data-testid="stSidebar"][aria-expanded="true"]) div[class*="st-key-stop-run-"] {
+    bottom: 19.25rem;
+    left: auto;
+    right: 1rem;
   }
 }
 @keyframes run-status-pulse {
@@ -3718,6 +3963,7 @@ div[class*="st-key-stop-run-"] button:hover {
 
     for index, message in enumerate(st.session_state.messages):
         with st.chat_message(message["role"]):
+            render_generated_images(message.get("evidence"))
             st.markdown(linkify_plain_urls(message["content"]))
             copy_label = (
                 "프롬프트 복사" if message["role"] == "user" else "출력 복사"
@@ -3727,20 +3973,44 @@ div[class*="st-key-stop-run-"] button:hover {
                 f"copy-history-{index}-{message['role']}",
                 copy_label,
             )
-            render_generated_images(message.get("evidence"))
             render_run_evidence(message.get("evidence"))
 
     model, thinking_mode = render_prompt_settings()
-    prompt = st.chat_input("예: 아침에 일찍 일어나고 싶은데 자꾸 알람을 꺼요")
-    if not prompt:
-        return
+    chat_input_label = "예: 아침에 일찍 일어나고 싶은데 자꾸 알람을 꺼요"
+    pending_generation = st.session_state.get("pending_generation")
 
-    run_id = f"run-{uuid.uuid4().hex}"
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    persist_chat_message("user", prompt)
-    with st.chat_message("user"):
-        st.markdown(linkify_plain_urls(prompt))
-        render_copy_button(prompt, f"copy-user-{run_id}", "프롬프트 복사")
+    if not pending_generation:
+        prompt = st.chat_input(chat_input_label, key="coach-chat-input")
+        if not prompt:
+            return
+
+        run_id = f"run-{uuid.uuid4().hex}"
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        persist_chat_message("user", prompt)
+        st.session_state.pending_generation = {
+            "prompt": prompt,
+            "run_id": run_id,
+            "model": model,
+            "thinking_mode": thinking_mode,
+            "goals_text": str(st.session_state.get("goals_text") or ""),
+        }
+        st.rerun()
+
+    if not isinstance(pending_generation, dict):
+        st.session_state.pop("pending_generation", None)
+        st.rerun()
+
+    prompt = str(pending_generation.get("prompt") or "")
+    if not prompt:
+        st.session_state.pop("pending_generation", None)
+        st.rerun()
+
+    run_id = str(pending_generation.get("run_id") or f"run-{uuid.uuid4().hex}")
+    pending_model = str(pending_generation.get("model") or model)
+    if pending_model in SUPPORTED_MODELS:
+        model = pending_model
+    pending_thinking = pending_generation.get("thinking_mode") or thinking_mode
+    thinking_mode = normalize_thinking_mode(str(pending_thinking))
 
     if not api_key:
         answer = (
@@ -3748,11 +4018,13 @@ div[class*="st-key-stop-run-"] button:hover {
         )
         st.session_state.messages.append({"role": "assistant", "content": answer})
         persist_chat_message("assistant", answer)
+        st.session_state.pop("pending_generation", None)
         with st.chat_message("assistant"):
             st.warning(answer)
+        st.chat_input(chat_input_label, key="coach-chat-input")
         return
 
-    goals_text = str(st.session_state.get("goals_text") or "")
+    goals_text = str(pending_generation.get("goals_text") or "")
     # When a personal goal document is loaded, take the research path so the
     # coach searches the goals (and the web) before answering.
     needs_search = prompt_likely_needs_search(prompt) or bool(goals_text.strip())
@@ -3776,6 +4048,7 @@ div[class*="st-key-stop-run-"] button:hover {
 
     with st.chat_message("assistant"):
         activity_placeholder = st.empty()
+        image_placeholder = st.empty()
         response_placeholder = st.empty()
         status_placeholder = st.empty()
         copy_placeholder = st.empty()
@@ -3828,6 +4101,7 @@ div[class*="st-key-stop-run-"] button:hover {
                         activity_placeholder,
                         response_placeholder,
                         status_placeholder,
+                        image_placeholder=image_placeholder,
                         stop_event=stop_event,
                     )
                 )
@@ -3858,13 +4132,14 @@ div[class*="st-key-stop-run-"] button:hover {
         if answer and not evidence.get("stopped"):
             with copy_placeholder:
                 render_copy_button(answer, f"copy-{run_id}", "출력 복사")
-        render_generated_images(evidence)
         render_run_evidence(evidence)
 
     st.session_state.messages.append(
         {"role": "assistant", "content": answer, "evidence": evidence}
     )
     persist_chat_message("assistant", answer, evidence)
+    st.session_state.pop("pending_generation", None)
+    st.chat_input(chat_input_label, key="coach-chat-input")
 
 
 if __name__ == "__main__":
