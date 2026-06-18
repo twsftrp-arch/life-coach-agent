@@ -4059,6 +4059,20 @@ def conversation_has_user_message() -> bool:
     )
 
 
+def should_show_message_copy(index: int, message: dict[str, object]) -> bool:
+    if message.get("role") != "assistant":
+        return True
+    if index != 0:
+        return True
+
+    content = str(message.get("content") or "").strip()
+    greeting_contents = {
+        default_greeting()["content"],
+        new_conversation_greeting()["content"],
+    }
+    return content not in greeting_contents
+
+
 def queue_prompt_for_generation(prompt: str, model: str, thinking_mode: str) -> None:
     clean_prompt = prompt.strip()
     if not clean_prompt:
@@ -4391,9 +4405,10 @@ def current_prompt_settings() -> tuple[str, str]:
     model = st.session_state.get("response-model-select") or configured_model
     if model not in SUPPORTED_MODELS:
         model = configured_model
-    thinking = normalize_thinking_mode(
-        str(st.session_state.get("response-thinking-mode-select") or configured_thinking)
-    )
+    thinking = normalize_thinking_mode(str(
+        st.session_state.get("response-thinking-mode-select")
+        or configured_thinking
+    ))
     return str(model), thinking
 
 
@@ -4409,11 +4424,10 @@ def render_response_settings_panel() -> None:
             key="response-model-select",
             width="stretch",
         )
-        thinking_mode = st.segmented_control(
+        thinking_mode = st.selectbox(
             "사고 모드",
             options=list(THINKING_MODES.keys()),
-            default=configured_thinking,
-            required=True,
+            index=list(THINKING_MODES.keys()).index(configured_thinking),
             format_func=thinking_mode_label,
             key="response-thinking-mode-select",
             width="stretch",
@@ -4907,11 +4921,12 @@ div[class*="st-key-stop-run-"] button:hover {
             copy_label = (
                 "프롬프트 복사" if message["role"] == "user" else "출력 복사"
             )
-            render_copy_button(
-                message["content"],
-                f"copy-history-{index}-{message['role']}",
-                copy_label,
-            )
+            if should_show_message_copy(index, message):
+                render_copy_button(
+                    message["content"],
+                    f"copy-history-{index}-{message['role']}",
+                    copy_label,
+                )
             render_run_evidence(message.get("evidence"))
 
     render_starter_prompts(model, thinking_mode)
