@@ -1,12 +1,15 @@
-# Life Coach Agent
+# Personal Agent Hub
 
-Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 라이프 코치 에이전트입니다.
+Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 개인용 에이전트 허브입니다.
 모델은 OpenAI-compatible Chat Completions API를 사용합니다.
 
 ## 기능
 
+- 첫 화면에서 에이전트 선택
+- `?agent=life_coach`: 목표, 습관, 자기계발 코칭
+- `?agent=movie`: 취향 기억 기반 영화 추천과 Nomad 영화 API 도구
+- `?agent=restaurant`: Triage/Menu/Order/Reservation handoff 레스토랑 봇
 - `st.chat_input`, `st.chat_message` 기반 채팅 인터페이스
-- 프롬프트 입력창에 붙어 보이는 모델/사고 모드 선택 `segmented_control`
 - OpenAI Agents SDK의 `Agent`, `Runner` 사용
 - `SQLiteSession` 기반 세션 메모리
 - Supabase 기반 채팅 히스토리 저장/복원
@@ -16,6 +19,8 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 라이프 코치 에이전
 - 사용자별 코칭 스타일 preset과 직접 코칭 지시 저장
 - 로그인 유지용 앱 세션 쿠키
 - `function_tool` 기반 웹 검색
+- Movie Agent 도구: `get_popular_movies`, `get_movie_details`, `get_movie_credits`
+- Restaurant Bot handoff: `Triage Agent → Menu/Order/Reservation Agent`
 - 검색 질문의 검색 후 답변 스트리밍
 - 검색 없는 대화의 자동 스트리밍
 - OpenAI-compatible provider의 tool-call 호환성 보호를 위한 안정 실행 fallback
@@ -29,11 +34,14 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 라이프 코치 에이전
 
 ## 구조
 
+- 허브 라우팅: `/`는 에이전트 선택 화면, `?agent=...`는 해당 에이전트 직접 진입
 - 모델 연결: `AsyncOpenAI(api_key=..., base_url=...)`
 - Agents SDK 모델: `OpenAIChatCompletionsModel`
 - 모델 선택: 내부 모델 id는 `deepseek-v4-flash`, `deepseek-v4-pro`를 쓰고, 사용자 화면에는 `Flash`, `Pro`로 표시
 - 사고 모드: `빠른 응답`(thinking off), `깊은 생각`(thinking high), `최대 생각`(thinking xhigh/max)
 - 웹 검색: DuckDuckGo HTML 결과를 읽는 `search_web` 함수 도구
+- 영화 도구: Nomad Movies API를 읽는 function tool 3개
+- 레스토랑 handoff: OpenAI Agents SDK `handoffs=[...]`와 `handoff(...)` 사용
 - 세션 기억: 로컬 SQLite 파일에 대화 이력 저장
 - 채팅 저장: Supabase `life_coach_sessions`, `life_coach_messages` 테이블에 사용자/코치 메시지 저장
 - Google OAuth: Supabase Auth PKCE 흐름으로 로그인하고 현재 채팅 세션을 Supabase user id에 연결

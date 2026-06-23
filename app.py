@@ -27,11 +27,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 from agents import (
     Agent,
+    HandoffOutputItem,
     ModelSettings,
     OpenAIChatCompletionsModel,
+    RunHooks,
     Runner,
     SQLiteSession,
     function_tool,
+    handoff,
     set_tracing_disabled,
 )
 from openai import AsyncOpenAI
@@ -40,6 +43,8 @@ from openai.types.shared import Reasoning
 
 APP_TITLE = "Life Coach Agent"
 APP_SHORT_TITLE = "Life Coach"
+HUB_TITLE = "Personal Agent Hub"
+HUB_SHORT_TITLE = "Agent Hub"
 APP_ICON_PATH = Path(__file__).with_name("static") / "icons" / "icon-192.png"
 DEFAULT_MODEL = "deepseek-v4-flash"
 SUPPORTED_MODELS = (DEFAULT_MODEL, "deepseek-v4-pro")
@@ -50,6 +55,20 @@ MODEL_LABELS = {
 DEFAULT_THINKING_MODE = "fast"
 DEFAULT_COACHING_STYLE = "balanced"
 CUSTOM_INSTRUCTIONS_MAX_CHARS = 1200
+AGENT_QUERY_PARAM = "agent"
+AGENT_MODE_LIFE_COACH = "life_coach"
+AGENT_MODE_MOVIE = "movie"
+AGENT_MODE_RESTAURANT = "restaurant"
+SUPPORTED_AGENT_MODES = (
+    AGENT_MODE_LIFE_COACH,
+    AGENT_MODE_MOVIE,
+    AGENT_MODE_RESTAURANT,
+)
+AGENT_MODE_LABELS = {
+    AGENT_MODE_LIFE_COACH: "Life Coach",
+    AGENT_MODE_MOVIE: "Movie Agent",
+    AGENT_MODE_RESTAURANT: "Restaurant Bot",
+}
 SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
 AUTH_CALLBACK_QUERY_PARAM = "auth"
@@ -163,7 +182,23 @@ STARTER_PROMPTS: tuple[tuple[str, str], ...] = (
     ("목표 기반 계획", "내 목표 파일을 기준으로 이번 주 실행 계획을 짜줘"),
     ("비전보드", "내 올해 목표를 담은 비전보드를 만들어줘"),
 )
+MOVIE_API_BASE_URL = "https://nomad-movies-2.nomadcoders.workers.dev"
 MOVIE_AGENT_ENV_PATH = Path.home() / "Documents" / "movie-agent" / ".env"
+RESTAURANT_MENU_TEXT = """
+Signature Menu
+- Truffle Mushroom Risotto: arborio rice, mushroom stock, parmesan, truffle oil. Vegetarian. Contains dairy.
+- Spicy Seafood Pasta: linguine, shrimp, squid, tomato chili sauce. Contains shellfish and gluten.
+- Grilled Chicken Salad: chicken breast, greens, avocado, lemon vinaigrette. Gluten-free.
+- Vegan Grain Bowl: quinoa, roasted vegetables, chickpeas, tahini dressing. Vegan. Contains sesame.
+- Classic Cheeseburger: beef patty, cheddar, lettuce, tomato, brioche bun. Contains dairy and gluten.
+- Chocolate Lava Cake: warm chocolate cake, vanilla ice cream. Contains dairy, eggs, and gluten.
+
+Drinks
+- Sparkling Lemonade
+- Iced Americano
+- House Red Wine
+- Zero Sugar Cola
+""".strip()
 KST = timezone(timedelta(hours=9), "KST")
 SEARCH_TIMINGS: contextvars.ContextVar[list[dict[str, object]] | None] = (
     contextvars.ContextVar("SEARCH_TIMINGS", default=None)
@@ -857,6 +892,43 @@ def get_query_value(name: str) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
+def get_query_agent_mode() -> str | None:
+    value = get_query_value(AGENT_QUERY_PARAM)
+    if value in SUPPORTED_AGENT_MODES:
+        return value
+
+    # Existing Life Coach deep links and OAuth callbacks must continue to open
+    # the original app, even when the new hub has no explicit agent parameter.
+    if (
+        get_query_value(SESSION_QUERY_PARAM)
+        or get_query_value(AUTH_CALLBACK_QUERY_PARAM)
+        or get_query_value(AUTH_RESTORE_QUERY_PARAM)
+        or get_query_value("code")
+        or get_query_value("error")
+        or get_query_value("error_code")
+    ):
+        return AGENT_MODE_LIFE_COACH
+
+    return None
+
+
+def build_agent_url(agent_mode: str) -> str:
+    return f"{read_app_base_url()}/?{urlencode({AGENT_QUERY_PARAM: agent_mode})}"
+
+
+def set_agent_mode(agent_mode: str | None) -> None:
+    try:
+        st.query_params.clear()
+        if agent_mode:
+            st.query_params[AGENT_QUERY_PARAM] = agent_mode
+    except Exception:
+        pass
+    if agent_mode:
+        st.session_state.agent_mode = agent_mode
+    else:
+        st.session_state.pop("agent_mode", None)
+
+
 def build_share_url(share_token: str) -> str:
     return f"{read_app_base_url()}/?{urlencode({SHARE_QUERY_PARAM: share_token})}"
 
@@ -1271,7 +1343,7 @@ def render_browser_head_tags() -> None:
         """
 <script>
 (function () {
-  const appName = "Life Coach";
+  const appName = "Agent Hub";
   const iconHref = "/app/static/icons/icon-192.png";
 
   const getDocument = (frameWindow) => {
@@ -2383,6 +2455,67 @@ def search_web(query: str) -> str:
     return output
 
 
+def fetch_movie_api(path: str) -> object:
+    request = Request(
+        f"{MOVIE_API_BASE_URL}{path}",
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+            )
+        },
+    )
+    with urlopen(request, timeout=10) as response:
+        return json.loads(response.read().decode("utf-8", errors="replace"))
+
+
+def compact_movie(movie: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": movie.get("id"),
+        "title": movie.get("title") or movie.get("name"),
+        "release_date": movie.get("release_date"),
+        "rating": movie.get("vote_average"),
+        "overview": movie.get("overview"),
+    }
+
+
+@function_tool
+def get_popular_movies() -> str:
+    """Get a compact list of currently popular movies."""
+    append_run_event("`get_popular_movies` tool 호출")
+    try:
+        movies = fetch_movie_api("/movies")
+    except Exception as exc:
+        return f"인기 영화 API 호출 실패: {exc.__class__.__name__}"
+    if not isinstance(movies, list):
+        return "인기 영화 목록을 가져오지 못했습니다."
+    compact = [compact_movie(movie) for movie in movies[:10] if isinstance(movie, dict)]
+    append_run_event(f"`get_popular_movies` tool 완료: {len(compact)}개")
+    return json.dumps(compact, ensure_ascii=False)
+
+
+@function_tool
+def get_movie_details(movie_id: int) -> str:
+    """Get details for a movie by movie_id."""
+    append_run_event(f"`get_movie_details` tool 호출: {movie_id}")
+    try:
+        movie = fetch_movie_api(f"/movies/{movie_id}")
+    except Exception as exc:
+        return f"영화 상세 API 호출 실패: {exc.__class__.__name__}"
+    return json.dumps(movie, ensure_ascii=False)[:4000]
+
+
+@function_tool
+def get_movie_credits(movie_id: int) -> str:
+    """Get cast and crew credits for a movie by movie_id."""
+    append_run_event(f"`get_movie_credits` tool 호출: {movie_id}")
+    try:
+        credits = fetch_movie_api(f"/movies/{movie_id}/credits")
+    except Exception as exc:
+        return f"영화 출연진 API 호출 실패: {exc.__class__.__name__}"
+    return json.dumps(credits, ensure_ascii=False)[:4000]
+
+
 def _split_goal_chunks(text: str) -> list[str]:
     """Split a goal/journal document into heading-based sections."""
     chunks: list[str] = []
@@ -3225,6 +3358,175 @@ def build_streaming_coach_agent(model: str, api_key: str, thinking_mode: str) ->
         model_settings=build_model_settings(thinking_mode),
         tools=[],
     )
+
+
+class HubRunHooks(RunHooks):
+    async def on_agent_start(self, context, agent) -> None:
+        append_run_event(f"{agent.name} 실행 시작")
+
+    async def on_handoff(self, context, from_agent, to_agent) -> None:
+        append_run_event(f"{from_agent.name} → {to_agent.name} handoff")
+
+    async def on_agent_end(self, context, agent, output) -> None:
+        append_run_event(f"{agent.name} 응답 완료")
+
+
+MOVIE_AGENT_INSTRUCTIONS = """
+You are Movie Agent, a friendly Korean movie recommendation assistant.
+
+Remember the user's preferences and watched movies through the conversation.
+Use the movie tools when the user asks about popular movies, current movies,
+specific movie details, actors, cast, or recommendations grounded in the Nomad
+movie database. Do not recommend a movie the user already said they watched.
+Answer in Korean unless the user asks otherwise.
+""".strip()
+
+
+RESTAURANT_TRIAGE_INSTRUCTIONS = """
+You are the Triage Agent for a restaurant customer support bot.
+
+Your job is routing, not answering. Decide what the customer wants and hand off
+to exactly one specialist:
+- Menu Agent: menu, ingredients, allergies, vegetarian/vegan/gluten-free options.
+- Order Agent: placing, changing, checking, or confirming food orders.
+- Reservation Agent: booking, changing, or checking table reservations.
+
+Always use a handoff for restaurant requests. Keep routing text minimal.
+""".strip()
+
+
+def build_movie_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
+    return Agent(
+        name="Movie Agent",
+        model=build_openai_compatible_model(model, api_key),
+        instructions=MOVIE_AGENT_INSTRUCTIONS,
+        model_settings=build_model_settings(thinking_mode),
+        tools=[get_popular_movies, get_movie_details, get_movie_credits, search_web],
+    )
+
+
+def build_restaurant_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
+    model_instance = build_openai_compatible_model(model, api_key)
+    settings = build_model_settings(thinking_mode)
+    menu_agent = Agent(
+        name="Menu Agent",
+        handoff_description="Menu, ingredients, allergies, and dietary options.",
+        model=model_instance,
+        model_settings=settings,
+        instructions=(
+            "You are the Menu Agent. Answer menu, ingredient, allergy, and "
+            "dietary questions using this menu. For severe allergies, tell the "
+            f"guest to confirm with staff.\n\n{RESTAURANT_MENU_TEXT}"
+        ),
+    )
+    order_agent = Agent(
+        name="Order Agent",
+        handoff_description="Take, update, and confirm food orders.",
+        model=model_instance,
+        model_settings=settings,
+        instructions=(
+            "You are the Order Agent. Collect item names, quantities, dine-in "
+            "or takeout, customer name if needed, and special requests. Do not "
+            f"claim real payment processing.\n\nMenu:\n{RESTAURANT_MENU_TEXT}"
+        ),
+    )
+    reservation_agent = Agent(
+        name="Reservation Agent",
+        handoff_description="Book, update, and confirm table reservation details.",
+        model=model_instance,
+        model_settings=settings,
+        instructions=(
+            "You are the Reservation Agent. Collect date, time, party size, "
+            "customer name, optional phone number, and seating preference. Do "
+            "not claim a real external reservation was saved; prepare the "
+            "details for staff."
+        ),
+    )
+    return Agent(
+        name="Triage Agent",
+        model=model_instance,
+        model_settings=settings,
+        instructions=RESTAURANT_TRIAGE_INSTRUCTIONS,
+        handoffs=[
+            handoff(
+                menu_agent,
+                tool_name_override="transfer_to_menu_agent",
+                tool_description_override="Route menu, ingredient, allergy, and dietary requests to Menu Agent.",
+            ),
+            handoff(
+                order_agent,
+                tool_name_override="transfer_to_order_agent",
+                tool_description_override="Route order placement, order changes, and confirmations to Order Agent.",
+            ),
+            handoff(
+                reservation_agent,
+                tool_name_override="transfer_to_reservation_agent",
+                tool_description_override="Route table booking and reservation requests to Reservation Agent.",
+            ),
+        ],
+    )
+
+
+def extract_handoff_pairs(result) -> list[str]:
+    pairs: list[str] = []
+    for item in getattr(result, "new_items", []):
+        if isinstance(item, HandoffOutputItem):
+            pairs.append(f"{item.source_agent.name} → {item.target_agent.name}")
+    return pairs
+
+
+def build_mode_agent(agent_mode: str, model: str, api_key: str, thinking_mode: str) -> Agent:
+    if agent_mode == AGENT_MODE_RESTAURANT:
+        return build_restaurant_agent(model, api_key, thinking_mode)
+    if agent_mode == AGENT_MODE_MOVIE:
+        return build_movie_agent(model, api_key, thinking_mode)
+    raise ValueError(f"Unsupported agent mode: {agent_mode}")
+
+
+def run_hub_agent_sync(
+    agent_mode: str,
+    prompt: str,
+    model: str,
+    api_key: str,
+    thinking_mode: str,
+    session: SQLiteSession,
+) -> tuple[str, dict[str, object]]:
+    started = time.perf_counter()
+    run_events: list[dict[str, object]] = []
+    search_timings: list[dict[str, object]] = []
+
+    events_token = RUN_EVENTS.set(run_events)
+    started_token = RUN_STARTED_AT.set(started)
+    search_timing_token = SEARCH_TIMINGS.set(search_timings)
+    search_count_token = SEARCH_CALL_COUNT.set([0])
+    try:
+        append_run_event("Runner.run_sync() 시작")
+        agent = build_mode_agent(agent_mode, model, api_key, thinking_mode)
+        result = Runner.run_sync(
+            agent,
+            prompt,
+            session=session,
+            hooks=HubRunHooks(),
+            max_turns=8,
+        )
+        append_run_event("Runner.run_sync() 완료")
+        final_agent = getattr(result, "last_agent", None)
+        evidence = {
+            "agent_mode": agent_mode,
+            "model": model,
+            "thinking_mode": thinking_mode_label(thinking_mode),
+            "total_seconds": time.perf_counter() - started,
+            "events": list(run_events),
+            "searches": list(search_timings),
+            "handoffs": extract_handoff_pairs(result),
+            "final_agent": getattr(final_agent, "name", AGENT_MODE_LABELS[agent_mode]),
+        }
+        return linkify_plain_urls(str(result.final_output)), evidence
+    finally:
+        SEARCH_CALL_COUNT.reset(search_count_token)
+        SEARCH_TIMINGS.reset(search_timing_token)
+        RUN_STARTED_AT.reset(started_token)
+        RUN_EVENTS.reset(events_token)
 
 
 async def run_agent_streamed(
@@ -4369,6 +4671,8 @@ def render_coaching_preferences() -> None:
 
 def render_sidebar() -> None:
     with st.sidebar:
+        render_agent_navigation(current_mode=AGENT_MODE_LIFE_COACH)
+        st.divider()
         st.header("설정")
 
         render_auth_controls()
@@ -4394,6 +4698,212 @@ def render_sidebar() -> None:
         sidebar_status = str(st.session_state.get("supabase_status") or "")
         if any(marker in sidebar_status for marker in ("실패", "필요", "권한", "미설정")):
             st.caption(sidebar_status)
+
+
+def agent_mode_caption(agent_mode: str) -> str:
+    captions = {
+        AGENT_MODE_LIFE_COACH: "목표, 습관, 자기계발 코칭",
+        AGENT_MODE_MOVIE: "취향을 기억하고 영화 추천",
+        AGENT_MODE_RESTAURANT: "메뉴, 주문, 예약 handoff 데모",
+    }
+    return captions.get(agent_mode, "")
+
+
+def agent_mode_prompt(agent_mode: str) -> str:
+    prompts = {
+        AGENT_MODE_MOVIE: "예: 나는 SF를 좋아하고 인터스텔라는 이미 봤어. 오늘 밤 뭐 볼까?",
+        AGENT_MODE_RESTAURANT: "예: 오늘 저녁 7시에 4명 예약하고 싶어요",
+    }
+    return prompts.get(agent_mode, "무엇을 도와드릴까요?")
+
+
+def render_agent_navigation(current_mode: str | None = None) -> None:
+    st.caption("Agent Hub")
+    if st.button("허브로 돌아가기", use_container_width=True, key="go-agent-hub"):
+        set_agent_mode(None)
+        st.rerun()
+
+    for mode in SUPPORTED_AGENT_MODES:
+        if mode == current_mode:
+            st.caption(f"현재: {AGENT_MODE_LABELS[mode]}")
+            continue
+        if st.button(
+            AGENT_MODE_LABELS[mode],
+            use_container_width=True,
+            key=f"switch-agent-{current_mode or 'hub'}-{mode}",
+        ):
+            set_agent_mode(mode)
+            st.rerun()
+
+
+def render_agent_hub() -> None:
+    st.title(HUB_TITLE)
+    st.caption("필요한 상황에 맞춰 전문 에이전트를 선택하세요.")
+
+    columns = st.columns(3, gap="medium")
+    for mode, column in zip(SUPPORTED_AGENT_MODES, columns):
+        with column:
+            st.subheader(AGENT_MODE_LABELS[mode])
+            st.caption(agent_mode_caption(mode))
+            if mode == AGENT_MODE_LIFE_COACH:
+                st.markdown("목표 파일, 웹 검색, 이미지 생성까지 연결된 개인 코치입니다.")
+            elif mode == AGENT_MODE_MOVIE:
+                st.markdown("인기 영화 API와 취향 기억을 활용해 볼 영화를 추천합니다.")
+            else:
+                st.markdown("Triage가 메뉴·주문·예약 담당에게 handoff합니다.")
+            if st.button("시작", key=f"hub-start-{mode}", use_container_width=True):
+                set_agent_mode(mode)
+                st.rerun()
+            st.markdown(f"[직접 링크]({build_agent_url(mode)})")
+
+
+def initialize_hub_agent_state(agent_mode: str) -> None:
+    session_key = f"{agent_mode}_session_id"
+    sdk_session_key = f"{agent_mode}_agent_session"
+    messages_key = f"{agent_mode}_messages"
+
+    if session_key not in st.session_state:
+        st.session_state[session_key] = f"{agent_mode}-{uuid.uuid4().hex}"
+    if sdk_session_key not in st.session_state:
+        st.session_state[sdk_session_key] = SQLiteSession(
+            st.session_state[session_key],
+            str(DB_PATH),
+        )
+    if messages_key not in st.session_state:
+        greeting = (
+            "좋아하는 장르, 이미 본 영화, 오늘의 기분을 알려주시면 영화를 추천해드릴게요."
+            if agent_mode == AGENT_MODE_MOVIE
+            else "안녕하세요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
+        )
+        st.session_state[messages_key] = [{"role": "assistant", "content": greeting}]
+
+
+def reset_hub_agent_conversation(agent_mode: str) -> None:
+    session_key = f"{agent_mode}_session_id"
+    sdk_session_key = f"{agent_mode}_agent_session"
+    messages_key = f"{agent_mode}_messages"
+    st.session_state[session_key] = f"{agent_mode}-{uuid.uuid4().hex}"
+    st.session_state[sdk_session_key] = SQLiteSession(
+        st.session_state[session_key],
+        str(DB_PATH),
+    )
+    greeting = (
+        "새 Movie Agent 대화를 시작했어요. 취향이나 이미 본 영화를 말해 주세요."
+        if agent_mode == AGENT_MODE_MOVIE
+        else "새 Restaurant Bot 대화를 시작했어요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
+    )
+    st.session_state[messages_key] = [{"role": "assistant", "content": greeting}]
+
+
+def render_hub_agent_sidebar(agent_mode: str) -> None:
+    with st.sidebar:
+        render_agent_navigation(current_mode=agent_mode)
+        st.divider()
+        st.header(AGENT_MODE_LABELS[agent_mode])
+        st.caption(agent_mode_caption(agent_mode))
+        if st.button("새 대화", use_container_width=True, key=f"new-{agent_mode}-chat"):
+            reset_hub_agent_conversation(agent_mode)
+            st.rerun()
+        st.divider()
+        render_response_settings_panel()
+
+
+def render_hub_run_evidence(evidence: dict[str, object]) -> None:
+    summary = [
+        f"모드: {AGENT_MODE_LABELS.get(str(evidence.get('agent_mode')), 'Agent')}",
+        f"모델: {model_label(evidence.get('model'))}",
+        f"최종 에이전트: {evidence.get('final_agent')}",
+    ]
+    elapsed = evidence.get("total_seconds")
+    if isinstance(elapsed, (int, float)):
+        summary.append(f"총 {elapsed:.2f}s")
+    st.caption(" · ".join(str(item) for item in summary if item))
+
+    handoffs = evidence.get("handoffs")
+    searches = evidence.get("searches")
+    events = evidence.get("events")
+    if handoffs or searches or events:
+        with st.expander("상세 실행 정보", expanded=False):
+            if handoffs:
+                st.markdown("**Handoff**")
+                for item in handoffs:
+                    st.markdown(f"- {item}")
+            if searches:
+                st.markdown("**검색/도구**")
+                for item in searches:
+                    if isinstance(item, dict):
+                        st.markdown(f"- {item.get('query')} ({format_seconds(float(item.get('seconds') or 0))})")
+            if events:
+                st.markdown(
+                    format_run_events_markdown(
+                        list(events),
+                        title="완료된 실행 타임라인",
+                    )
+                )
+
+
+def render_hub_agent_app(agent_mode: str) -> None:
+    initialize_hub_agent_state(agent_mode)
+    render_hub_agent_sidebar(agent_mode)
+    model, thinking_mode = current_prompt_settings()
+    api_key = read_deepseek_api_key()
+
+    messages_key = f"{agent_mode}_messages"
+    sdk_session_key = f"{agent_mode}_agent_session"
+    st.title(AGENT_MODE_LABELS[agent_mode])
+    st.caption(agent_mode_caption(agent_mode))
+
+    if not api_key:
+        st.warning("모델 API 키가 필요합니다. Streamlit Secrets 또는 로컬 환경변수에 키를 넣어 주세요.")
+
+    for message in st.session_state[messages_key]:
+        with st.chat_message(message["role"]):
+            st.markdown(linkify_plain_urls(str(message["content"])))
+            if isinstance(message.get("evidence"), dict):
+                render_hub_run_evidence(message["evidence"])
+
+    prompt = st.chat_input(agent_mode_prompt(agent_mode), key=f"{agent_mode}-chat-input")
+    if not prompt:
+        return
+
+    st.session_state[messages_key].append({"role": "user", "content": prompt})
+    with st.chat_message("user"):
+        st.markdown(prompt)
+
+    with st.chat_message("assistant"):
+        response_placeholder = st.empty()
+        status_placeholder = st.empty()
+        with st.spinner("에이전트 실행 중..."):
+            try:
+                answer, evidence = run_hub_agent_sync(
+                    agent_mode,
+                    prompt,
+                    model,
+                    api_key,
+                    thinking_mode,
+                    st.session_state[sdk_session_key],
+                )
+            except Exception as exc:
+                answer = (
+                    "응답 생성 중 오류가 발생했어요. API 키, 모델 이름, 네트워크 상태를 확인해 주세요. "
+                    f"오류 유형: `{exc.__class__.__name__}`"
+                )
+                evidence = {
+                    "agent_mode": agent_mode,
+                    "model": model,
+                    "final_agent": "Error",
+                    "total_seconds": None,
+                    "events": [],
+                    "handoffs": [],
+                    "searches": [],
+                }
+        response_placeholder.markdown(answer)
+        with status_placeholder:
+            render_hub_run_evidence(evidence)
+
+    st.session_state[messages_key].append(
+        {"role": "assistant", "content": answer, "evidence": evidence}
+    )
 
 
 def default_prompt_settings() -> tuple[str, str]:
@@ -4655,7 +5165,7 @@ async def run_search_then_stream_answer(
 
 
 def main() -> None:
-    st.set_page_config(page_title=APP_SHORT_TITLE, page_icon=str(APP_ICON_PATH))
+    st.set_page_config(page_title=HUB_SHORT_TITLE, page_icon=str(APP_ICON_PATH))
     st.markdown(
         """
 <style>
@@ -4911,6 +5421,17 @@ div[class*="st-key-stop-run-"] button:hover {
     if share_token:
         render_copy_feedback()
         render_shared_chat_page(share_token)
+        return
+
+    agent_mode = get_query_agent_mode()
+    if not agent_mode:
+        render_copy_feedback()
+        render_agent_hub()
+        return
+
+    if agent_mode in {AGENT_MODE_MOVIE, AGENT_MODE_RESTAURANT}:
+        render_copy_feedback()
+        render_hub_agent_app(agent_mode)
         return
 
     initialize_state()
