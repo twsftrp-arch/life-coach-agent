@@ -4469,7 +4469,7 @@ def extract_uploaded_goal_text(uploaded_file) -> str:
 
 
 def render_goals_panel() -> None:
-    with st.expander("개인 목표 파일", expanded=False):
+    with st.expander("Life Coach 목표 파일", expanded=False):
         user_id = current_auth_user_id()
         goals_text = str(st.session_state.get("goals_text") or "")
         source = str(st.session_state.get("goals_source") or "")
@@ -4640,7 +4640,7 @@ def render_goals_panel() -> None:
 
 def render_coaching_preferences() -> None:
     user_id = current_auth_user_id()
-    with st.expander("코칭 스타일", expanded=False):
+    with st.expander("Life Coach 코칭 스타일", expanded=False):
         style_options = list(COACHING_STYLES.keys())
         current_style = normalize_coaching_style(st.session_state.get("coaching_style"))
         if current_style not in style_options:
@@ -4698,7 +4698,7 @@ def render_sidebar() -> None:
     with st.sidebar:
         render_agent_navigation(current_mode=AGENT_MODE_LIFE_COACH)
         st.divider()
-        st.header("설정")
+        st.header("Life Coach 설정")
 
         render_auth_controls()
 
@@ -4709,10 +4709,16 @@ def render_sidebar() -> None:
         render_user_session_list()
 
         st.divider()
-        st.caption("개인화")
+        st.caption("Life Coach 전용 개인화")
         render_coaching_preferences()
         render_goals_panel()
-        render_response_settings_panel()
+
+        st.divider()
+        st.caption("세 에이전트 공통")
+        render_response_settings_panel(
+            "공통 응답 설정",
+            "모델과 사고 모드는 Life Coach, Movie Agent, Restaurant Bot에 공통 적용됩니다.",
+        )
 
         with st.expander("개인정보", expanded=False):
             st.caption(
@@ -4846,13 +4852,30 @@ def render_hub_agent_sidebar(agent_mode: str) -> None:
     with st.sidebar:
         render_agent_navigation(current_mode=agent_mode)
         st.divider()
-        st.header(AGENT_MODE_LABELS[agent_mode])
+        st.header(f"{AGENT_MODE_LABELS[agent_mode]} 설정")
         st.caption(agent_mode_caption(agent_mode))
         if st.button("새 대화", use_container_width=True, key=f"new-{agent_mode}-chat"):
             reset_hub_agent_conversation(agent_mode)
             st.rerun()
+
+        with st.expander("이 에이전트가 하는 일", expanded=False):
+            if agent_mode == AGENT_MODE_MOVIE:
+                st.caption(
+                    "영화 취향, 이미 본 작품, 장르 선호를 대화 안에서 기억하고 "
+                    "Nomad Movies API와 웹 검색으로 추천을 보강합니다."
+                )
+            else:
+                st.caption(
+                    "Triage Agent가 요청을 읽고 Menu, Order, Reservation 전문 "
+                    "에이전트로 handoff합니다."
+                )
+
         st.divider()
-        render_response_settings_panel()
+        st.caption("세 에이전트 공통")
+        render_response_settings_panel(
+            "공통 응답 설정",
+            "모델과 사고 모드는 모든 에이전트에 공통 적용됩니다.",
+        )
 
 
 def render_hub_run_evidence(evidence: dict[str, object]) -> None:
@@ -4974,9 +4997,14 @@ def current_prompt_settings() -> tuple[str, str]:
     return str(model), thinking
 
 
-def render_response_settings_panel() -> None:
+def render_response_settings_panel(
+    title: str = "응답 설정",
+    description: str | None = None,
+) -> None:
     configured_model, configured_thinking = current_prompt_settings()
-    with st.expander("응답 설정", expanded=False):
+    with st.expander(title, expanded=False):
+        if description:
+            st.caption(description)
         model = st.segmented_control(
             "모델",
             options=SUPPORTED_MODELS,
