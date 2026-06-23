@@ -916,6 +916,10 @@ def build_agent_url(agent_mode: str) -> str:
     return f"{read_app_base_url()}/?{urlencode({AGENT_QUERY_PARAM: agent_mode})}"
 
 
+def build_life_coach_url() -> str:
+    return build_agent_url(AGENT_MODE_LIFE_COACH)
+
+
 def set_agent_mode(agent_mode: str | None) -> None:
     try:
         st.query_params.clear()
@@ -935,6 +939,7 @@ def build_share_url(share_token: str) -> str:
 
 def clear_oauth_query_params(preserve_auth_token: str | None = None) -> None:
     st.session_state.pending_oauth_url_cleanup = True
+    st.session_state.pending_oauth_url_cleanup_agent_mode = AGENT_MODE_LIFE_COACH
     if preserve_auth_token and re.fullmatch(r"[A-Za-z0-9_-]{40,160}", preserve_auth_token):
         st.session_state.pending_auth_restore_url_token = preserve_auth_token
     elif "pending_auth_restore_url_token" in st.session_state:
@@ -1306,13 +1311,20 @@ def render_oauth_url_cleanup_script() -> None:
         return
 
     restore_token = st.session_state.get("pending_auth_restore_url_token")
+    agent_mode = st.session_state.get("pending_oauth_url_cleanup_agent_mode")
+    if agent_mode not in SUPPORTED_AGENT_MODES:
+        agent_mode = AGENT_MODE_LIFE_COACH
     restore_token_json = json.dumps(str(restore_token or "")).replace("<", "\\u003c")
+    agent_param_json = json.dumps(AGENT_QUERY_PARAM).replace("<", "\\u003c")
+    agent_mode_json = json.dumps(str(agent_mode)).replace("<", "\\u003c")
     restore_param_json = json.dumps(AUTH_RESTORE_QUERY_PARAM).replace("<", "\\u003c")
     components.html(
         f"""
 <script>
 (function () {{
   const restoreToken = {restore_token_json};
+  const agentParam = {agent_param_json};
+  const agentMode = {agent_mode_json};
   const restoreParam = {restore_param_json};
   const cleanUrl = (target) => {{
     try {{
@@ -1320,6 +1332,9 @@ def render_oauth_url_cleanup_script() -> None:
         return;
       }}
       const nextUrl = new URL(target.location.origin + target.location.pathname);
+      if (agentMode) {{
+        nextUrl.searchParams.set(agentParam, agentMode);
+      }}
       if (restoreToken) {{
         nextUrl.searchParams.set(restoreParam, restoreToken);
       }}
@@ -1336,6 +1351,8 @@ def render_oauth_url_cleanup_script() -> None:
     del st.session_state.pending_oauth_url_cleanup
     if "pending_auth_restore_url_token" in st.session_state:
         del st.session_state.pending_auth_restore_url_token
+    if "pending_oauth_url_cleanup_agent_mode" in st.session_state:
+        del st.session_state.pending_oauth_url_cleanup_agent_mode
 
 
 def render_browser_head_tags() -> None:
@@ -1452,6 +1469,7 @@ def build_google_oauth_url() -> str | None:
     code_challenge = make_pkce_code_challenge(code_verifier)
     oauth_state = supabase_store_oauth_state(chat_session_key, code_verifier)
     redirect_to = f"{read_app_base_url()}/?{urlencode({
+        AGENT_QUERY_PARAM: AGENT_MODE_LIFE_COACH,
         AUTH_CALLBACK_QUERY_PARAM: 'callback',
         OAUTH_STATE_QUERY_PARAM: oauth_state,
     })}"
@@ -4318,12 +4336,12 @@ def render_shared_chat_page(share_token: str) -> None:
         shared_chat = supabase_load_shared_chat(share_token)
     except Exception as exc:
         st.error(f"공유 대화를 불러오지 못했어요. 오류 유형: {exc.__class__.__name__}")
-        st.markdown(f"[새 대화 시작하기](<{read_app_base_url()}>)")
+        st.markdown(f"[새 대화 시작하기](<{build_life_coach_url()}>)")
         return
 
     if not shared_chat:
         st.warning("공유 링크가 없거나 취소되었어요.")
-        st.markdown(f"[새 대화 시작하기](<{read_app_base_url()}>)")
+        st.markdown(f"[새 대화 시작하기](<{build_life_coach_url()}>)")
         return
 
     title = str(shared_chat.get("title") or "공유된 대화").strip()
@@ -4354,7 +4372,7 @@ def render_shared_chat_page(share_token: str) -> None:
             )
 
     st.divider()
-    st.markdown(f"[내 Life Coach 대화 시작하기](<{read_app_base_url()}>)")
+    st.markdown(f"[내 Life Coach 대화 시작하기](<{build_life_coach_url()}>)")
 
 
 def conversation_has_user_message() -> bool:
