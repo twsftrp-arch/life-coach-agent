@@ -3337,10 +3337,11 @@ def build_search_agent(
     thinking_mode: str,
     goals_text: str = "",
 ) -> Agent:
-    tools = [search_web, generate_image]
-    if goals_text and goals_text.strip():
-        # search_goals first so the planner recalls personal goals before the web.
-        tools = [make_search_goals_tool(goals_text), search_web, generate_image]
+    # Keep search_goals registered even when no goal file is loaded. The model
+    # may ask for the personal-goals tool when the user says "my goal file";
+    # an empty bound tool returns a clear "upload a file first" message instead
+    # of causing a ModelBehaviorError.
+    tools = [make_search_goals_tool(goals_text), search_web, generate_image]
     return Agent(
         name="Life Coach Researcher",
         model=build_openai_compatible_model(model, api_key),
@@ -4401,8 +4402,14 @@ def render_starter_prompts(model: str, thinking_mode: str) -> None:
     if conversation_has_user_message():
         return
     st.caption("바로 시작하기")
-    columns = st.columns(len(STARTER_PROMPTS), gap="small")
-    for index, ((label, prompt), column) in enumerate(zip(STARTER_PROMPTS, columns)):
+    prompts = list(STARTER_PROMPTS)
+    if not str(st.session_state.get("goals_text") or "").strip():
+        prompts[1] = (
+            "이번 주 계획",
+            "이번 주에 만들고 싶은 습관을 정리하고 바로 실행할 수 있는 계획을 짜줘",
+        )
+    columns = st.columns(len(prompts), gap="small")
+    for index, ((label, prompt), column) in enumerate(zip(prompts, columns)):
         with column:
             if st.button(label, key=f"starter-prompt-{index}", use_container_width=True):
                 queue_prompt_for_generation(prompt, model, thinking_mode)
@@ -4718,22 +4725,44 @@ def agent_mode_prompt(agent_mode: str) -> str:
 
 
 def render_agent_navigation(current_mode: str | None = None) -> None:
-    st.caption("Agent Hub")
-    if st.button("허브로 돌아가기", use_container_width=True, key="go-agent-hub"):
+    st.subheader("Agent Hub")
+    if st.button("전체 에이전트 보기", use_container_width=True, key="go-agent-hub"):
         set_agent_mode(None)
         st.rerun()
 
+    st.caption("에이전트 선택")
     for mode in SUPPORTED_AGENT_MODES:
+        label = AGENT_MODE_LABELS[mode]
         if mode == current_mode:
-            st.caption(f"현재: {AGENT_MODE_LABELS[mode]}")
-            continue
+            label = f"✓ {label}"
+        help_text = agent_mode_caption(mode)
         if st.button(
-            AGENT_MODE_LABELS[mode],
+            label,
             use_container_width=True,
             key=f"switch-agent-{current_mode or 'hub'}-{mode}",
+            disabled=(mode == current_mode),
+            help=help_text,
         ):
             set_agent_mode(mode)
             st.rerun()
+
+
+def render_agent_mode_switcher(current_mode: str) -> None:
+    columns = st.columns(3, gap="small")
+    for mode, column in zip(SUPPORTED_AGENT_MODES, columns):
+        if mode == current_mode:
+            label = f"✓ {AGENT_MODE_LABELS[mode]}"
+        else:
+            label = AGENT_MODE_LABELS[mode]
+        with column:
+            if st.button(
+                label,
+                key=f"top-agent-switch-{current_mode}-{mode}",
+                use_container_width=True,
+                disabled=(mode == current_mode),
+            ):
+                set_agent_mode(mode)
+                st.rerun()
 
 
 def render_agent_hub() -> None:
@@ -4850,6 +4879,7 @@ def render_hub_agent_app(agent_mode: str) -> None:
 
     messages_key = f"{agent_mode}_messages"
     sdk_session_key = f"{agent_mode}_agent_session"
+    render_agent_mode_switcher(agent_mode)
     st.title(AGENT_MODE_LABELS[agent_mode])
     st.caption(agent_mode_caption(agent_mode))
 
@@ -5455,6 +5485,7 @@ div[class*="st-key-stop-run-"] button:hover {
     model, thinking_mode = current_prompt_settings()
     api_key = read_deepseek_api_key()
 
+    render_agent_mode_switcher(AGENT_MODE_LIFE_COACH)
     st.title(APP_TITLE)
     st.caption("목표를 작게 나누고 오늘 할 일을 정리해 주는 라이프 코치")
 
