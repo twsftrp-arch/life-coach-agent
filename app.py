@@ -4807,7 +4807,6 @@ def render_agent_hub() -> None:
             if st.button("시작", key=f"hub-start-{mode}", use_container_width=True):
                 set_agent_mode(mode)
                 st.rerun()
-            st.markdown(f"[직접 링크]({build_agent_url(mode)})")
 
 
 def initialize_hub_agent_state(agent_mode: str) -> None:
