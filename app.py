@@ -3709,6 +3709,147 @@ def run_hub_agent_sync(
         RUN_EVENTS.reset(events_token)
 
 
+async def run_hub_agent_streamed(
+    agent_mode: str,
+    prompt: str,
+    model: str,
+    api_key: str,
+    thinking_mode: str,
+    session: SQLiteSession,
+    response_placeholder,
+    status_placeholder,
+) -> tuple[str, dict[str, object]]:
+    started = time.perf_counter()
+    run_events: list[dict[str, object]] = []
+    search_timings: list[dict[str, object]] = []
+    events_token = RUN_EVENTS.set(run_events)
+    started_token = RUN_STARTED_AT.set(started)
+    search_timing_token = SEARCH_TIMINGS.set(search_timings)
+    search_count_token = SEARCH_CALL_COUNT.set([0])
+    streamed_text = ""
+    saw_first_delta = False
+    status_state: dict[str, object] = {
+        "message": "에이전트 실행 중...",
+        "started": time.perf_counter(),
+        "done": False,
+    }
+
+    def build_evidence(**extra: object) -> dict[str, object]:
+        evidence: dict[str, object] = {
+            "agent_mode": agent_mode,
+            "model": model,
+            "thinking_mode": thinking_mode_label(thinking_mode),
+            "total_seconds": time.perf_counter() - started,
+            "events": list(run_events),
+            "searches": list(search_timings),
+            "handoffs": [],
+            "streaming": True,
+        }
+        evidence.update(extra)
+        return evidence
+
+    async def update_stream_status() -> None:
+        while not status_state["done"]:
+            render_status_message(
+                status_placeholder,
+                str(status_state["message"]),
+                time.perf_counter() - float(status_state["started"]),
+            )
+            await asyncio.sleep(0.25)
+
+    status_task: asyncio.Task | None = None
+    try:
+        append_run_event("`Runner.run_streamed()` 시작")
+        agent = build_mode_agent(agent_mode, model, api_key, thinking_mode)
+        status_task = asyncio.create_task(update_stream_status())
+        result = Runner.run_streamed(
+            agent,
+            prompt,
+            session=session,
+            hooks=HubRunHooks(),
+            max_turns=8,
+        )
+        try:
+            async for event in result.stream_events():
+                if event.type == "run_item_stream_event":
+                    if event.name == "tool_called":
+                        append_run_event("Agents SDK stream event: tool 호출 감지")
+                        status_state["message"] = "도구 실행 중..."
+                        status_state["started"] = time.perf_counter()
+                    elif event.name == "tool_output":
+                        append_run_event("Agents SDK stream event: tool 결과 수신")
+                if event.type != "raw_response_event":
+                    continue
+                data = getattr(event, "data", None)
+                if getattr(data, "type", None) != "response.output_text.delta":
+                    continue
+                delta = getattr(data, "delta", "")
+                if not delta:
+                    continue
+                if not saw_first_delta:
+                    saw_first_delta = True
+                    status_state["message"] = "답변 스트리밍 중..."
+                    status_state["started"] = time.perf_counter()
+                    append_run_event("응답 토큰 스트리밍 시작")
+                streamed_text += delta
+                response_placeholder.markdown(f"{streamed_text}▌")
+
+            final_output_error: Exception | None = None
+            try:
+                final_output = result.final_output
+            except (
+                InputGuardrailTripwireTriggered,
+                OutputGuardrailTripwireTriggered,
+            ):
+                raise
+            except Exception as exc:
+                if not streamed_text:
+                    raise
+                final_output = streamed_text
+                final_output_error = exc
+                append_run_event(
+                    f"`result.final_output` 복구: {exc.__class__.__name__}"
+                )
+        except InputGuardrailTripwireTriggered:
+            append_run_event("Input Guardrail 차단")
+            answer = restaurant_input_guardrail_response()
+            response_placeholder.markdown(answer)
+            return answer, build_evidence(
+                final_agent="Input Guardrail",
+                guardrail="input",
+            )
+        except OutputGuardrailTripwireTriggered:
+            append_run_event("Output Guardrail 차단")
+            answer = restaurant_output_guardrail_response()
+            response_placeholder.markdown(answer)
+            return answer, build_evidence(
+                final_agent="Output Guardrail",
+                guardrail="output",
+            )
+
+        answer = linkify_plain_urls(str(final_output or streamed_text))
+        response_placeholder.markdown(answer)
+        append_run_event("`Runner.run_streamed()` 완료")
+        final_agent = getattr(result, "last_agent", None)
+        evidence = build_evidence(
+            final_agent=getattr(final_agent, "name", AGENT_MODE_LABELS[agent_mode]),
+            handoffs=extract_handoff_pairs(result),
+            guardrail="passed",
+        )
+        if final_output_error is not None:
+            evidence["fallback_reason"] = final_output_error.__class__.__name__
+        return answer, evidence
+    finally:
+        status_state["done"] = True
+        if status_task is not None and not status_task.done():
+            await status_task
+        status_placeholder.empty()
+        SEARCH_CALL_COUNT.reset(search_count_token)
+        SEARCH_TIMINGS.reset(search_timing_token)
+        RUN_STARTED_AT.reset(started_token)
+        RUN_EVENTS.reset(events_token)
+
+
 async def run_agent_streamed(
     agent: Agent,
     prompt: str,
@@ -5108,33 +5249,48 @@ def render_hub_agent_app(agent_mode: str) -> None:
     with st.chat_message("assistant"):
         response_placeholder = st.empty()
         status_placeholder = st.empty()
-        with st.spinner("에이전트 실행 중..."):
-            try:
-                answer, evidence = run_hub_agent_sync(
+        try:
+            answer, evidence = asyncio.run(
+                run_hub_agent_streamed(
                     agent_mode,
                     prompt,
                     model,
                     api_key,
                     thinking_mode,
                     st.session_state[sdk_session_key],
+                    response_placeholder,
+                    status_placeholder,
                 )
-            except Exception as exc:
-                answer = (
-                    "응답 생성 중 오류가 발생했어요. API 키, 모델 이름, 네트워크 상태를 확인해 주세요. "
-                    f"오류 유형: `{exc.__class__.__name__}`"
-                )
-                evidence = {
-                    "agent_mode": agent_mode,
-                    "model": model,
-                    "final_agent": "Error",
-                    "total_seconds": None,
-                    "events": [],
-                    "handoffs": [],
-                    "searches": [],
-                }
+            )
+        except Exception:
+            # 스트리밍이 실패하면(DeepSeek tool/handoff 스트리밍 비호환 등) 동기 실행으로 fallback
+            status_placeholder.empty()
+            with st.spinner("에이전트 실행 중..."):
+                try:
+                    answer, evidence = run_hub_agent_sync(
+                        agent_mode,
+                        prompt,
+                        model,
+                        api_key,
+                        thinking_mode,
+                        st.session_state[sdk_session_key],
+                    )
+                except Exception as exc:
+                    answer = (
+                        "응답 생성 중 오류가 발생했어요. API 키, 모델 이름, 네트워크 상태를 확인해 주세요. "
+                        f"오류 유형: `{exc.__class__.__name__}`"
+                    )
+                    evidence = {
+                        "agent_mode": agent_mode,
+                        "model": model,
+                        "final_agent": "Error",
+                        "total_seconds": None,
+                        "events": [],
+                        "handoffs": [],
+                        "searches": [],
+                    }
         response_placeholder.markdown(answer)
-        with status_placeholder:
-            render_hub_run_evidence(evidence)
+        render_hub_run_evidence(evidence)
 
     st.session_state[messages_key].append(
         {"role": "assistant", "content": answer, "evidence": evidence}
