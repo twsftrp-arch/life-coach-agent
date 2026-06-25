@@ -5852,6 +5852,12 @@ div[class*="st-key-stop-run-"] button:hover {
     restore_auth_session_if_possible()
     restore_user_preferences_if_possible()
     restore_goal_document_if_possible()
+    # OAuth 콜백이 새 탭(auth_restore) 흐름에서 state 불일치로 실패해도,
+    # 세션 복원으로 이미 인증됐다면 사용자에게 실패 문구를 보이지 않는다(표시 버그 방지).
+    if current_auth_user() and str(
+        st.session_state.get("auth_status") or ""
+    ).startswith("Google 로그인 실패"):
+        st.session_state.auth_status = "Google 로그인: 연결됨"
     stale_permission_status = (
         st.session_state.get("supabase_status") == "Supabase 복원 실패: PermissionError"
     )
