@@ -3718,6 +3718,7 @@ async def run_hub_agent_streamed(
     session: SQLiteSession,
     response_placeholder,
     status_placeholder,
+    activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> tuple[str, dict[str, object]]:
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
@@ -3726,6 +3727,8 @@ async def run_hub_agent_streamed(
     started_token = RUN_STARTED_AT.set(started)
     search_timing_token = SEARCH_TIMINGS.set(search_timings)
     search_count_token = SEARCH_CALL_COUNT.set([0])
+    renderer_token = RUN_EVENT_RENDERER.set(activity_renderer)
+    queue_token = RUN_EVENT_QUEUE.set(None)
     streamed_text = ""
     saw_first_delta = False
     status_state: dict[str, object] = {
@@ -3844,6 +3847,8 @@ async def run_hub_agent_streamed(
         if status_task is not None and not status_task.done():
             await status_task
         status_placeholder.empty()
+        RUN_EVENT_QUEUE.reset(queue_token)
+        RUN_EVENT_RENDERER.reset(renderer_token)
         SEARCH_CALL_COUNT.reset(search_count_token)
         SEARCH_TIMINGS.reset(search_timing_token)
         RUN_STARTED_AT.reset(started_token)
@@ -5204,10 +5209,15 @@ def render_hub_run_evidence(evidence: dict[str, object]) -> None:
                 for item in handoffs:
                     st.markdown(f"- {item}")
             if searches:
-                st.markdown("**검색/도구**")
+                st.markdown("**검색/출처**")
                 for item in searches:
                     if isinstance(item, dict):
-                        st.markdown(f"- {item.get('query')} ({format_seconds(float(item.get('seconds') or 0))})")
+                        st.markdown(
+                            f"- {item.get('query')} "
+                            f"({format_seconds(float(item.get('seconds') or 0))})"
+                        )
+                        for url in item.get("urls") or []:
+                            st.markdown(f"    - {format_markdown_url(url)}")
             if events:
                 st.markdown(
                     format_run_events_markdown(
@@ -5247,8 +5257,13 @@ def render_hub_agent_app(agent_mode: str) -> None:
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
+        activity_placeholder = st.empty()
         response_placeholder = st.empty()
         status_placeholder = st.empty()
+
+        def render_activity(events: list[dict[str, object]]) -> None:
+            activity_placeholder.markdown(format_run_events_markdown(events))
+
         try:
             answer, evidence = asyncio.run(
                 run_hub_agent_streamed(
@@ -5260,6 +5275,7 @@ def render_hub_agent_app(agent_mode: str) -> None:
                     st.session_state[sdk_session_key],
                     response_placeholder,
                     status_placeholder,
+                    render_activity,
                 )
             )
         except Exception:
@@ -5289,6 +5305,7 @@ def render_hub_agent_app(agent_mode: str) -> None:
                         "handoffs": [],
                         "searches": [],
                     }
+        activity_placeholder.empty()
         response_placeholder.markdown(answer)
         render_hub_run_evidence(evidence)
 
