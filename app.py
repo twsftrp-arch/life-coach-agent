@@ -2517,8 +2517,15 @@ def get_popular_movies() -> str:
         movies = fetch_movie_api("/movies")
     except Exception as exc:
         detail = f"{exc.__class__.__name__}: {str(exc)[:150]}"
-        append_run_event(f"`get_popular_movies` 실패: {detail}")
-        return f"인기 영화 API 호출 실패: {detail}"
+        append_run_event(f"`get_popular_movies` API 실패 → 웹검색 대체: {detail}")
+        try:
+            web = search_web_raw("2026 요즘 인기 있는 영화 추천 평점")
+        except Exception:
+            return f"인기 영화 API 호출 실패: {detail}"
+        return (
+            "영화 API를 일시적으로 쓸 수 없어 웹 검색 결과로 대체합니다. "
+            "아래 정보를 바탕으로 사용자에게 영화를 추천하세요.\n" + web
+        )
     if not isinstance(movies, list):
         return "인기 영화 목록을 가져오지 못했습니다."
     compact = [compact_movie(movie) for movie in movies[:10] if isinstance(movie, dict)]
@@ -2533,7 +2540,7 @@ def get_movie_details(movie_id: int) -> str:
     try:
         movie = fetch_movie_api(f"/movies/{movie_id}")
     except Exception as exc:
-        return f"영화 상세 API 호출 실패: {exc.__class__.__name__}"
+        return f"영화 상세 API 호출 실패: {exc.__class__.__name__}: {str(exc)[:150]}"
     return json.dumps(movie, ensure_ascii=False)[:4000]
 
 
@@ -2544,7 +2551,7 @@ def get_movie_credits(movie_id: int) -> str:
     try:
         credits = fetch_movie_api(f"/movies/{movie_id}/credits")
     except Exception as exc:
-        return f"영화 출연진 API 호출 실패: {exc.__class__.__name__}"
+        return f"영화 출연진 API 호출 실패: {exc.__class__.__name__}: {str(exc)[:150]}"
     return json.dumps(credits, ensure_ascii=False)[:4000]
 
 
