@@ -2479,17 +2479,24 @@ def search_web(query: str) -> str:
 
 
 def fetch_movie_api(path: str) -> object:
-    request = Request(
-        f"{MOVIE_API_BASE_URL}{path}",
-        headers={
-            "User-Agent": (
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
-            )
-        },
-    )
-    with urlopen(request, timeout=10) as response:
-        return json.loads(response.read().decode("utf-8", errors="replace"))
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36"
+        ),
+        "Accept": "application/json",
+    }
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            request = Request(f"{MOVIE_API_BASE_URL}{path}", headers=headers)
+            with urlopen(request, timeout=15) as response:
+                return json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception as exc:  # noqa: BLE001 - 재시도 후 마지막 예외를 호출자에 전달
+            last_exc = exc
+            if attempt < 2:
+                time.sleep(0.6)
+    raise last_exc if last_exc else RuntimeError("movie api failed")
 
 
 def compact_movie(movie: dict[str, object]) -> dict[str, object]:
@@ -2509,7 +2516,9 @@ def get_popular_movies() -> str:
     try:
         movies = fetch_movie_api("/movies")
     except Exception as exc:
-        return f"인기 영화 API 호출 실패: {exc.__class__.__name__}"
+        detail = f"{exc.__class__.__name__}: {str(exc)[:150]}"
+        append_run_event(f"`get_popular_movies` 실패: {detail}")
+        return f"인기 영화 API 호출 실패: {detail}"
     if not isinstance(movies, list):
         return "인기 영화 목록을 가져오지 못했습니다."
     compact = [compact_movie(movie) for movie in movies[:10] if isinstance(movie, dict)]
