@@ -187,6 +187,7 @@ STARTER_PROMPTS: tuple[tuple[str, str], ...] = (
     ("목표 기반 계획", "내 목표 파일을 기준으로 이번 주 실행 계획을 짜줘"),
     ("비전보드", "내 올해 목표를 담은 비전보드를 만들어줘"),
 )
+# Nomad Movies API. 배포 환경에서 호출 실패 시 get_popular_movies가 웹검색으로 대체한다.
 MOVIE_API_BASE_URL = "https://nomad-movies-2.nomadcoders.workers.dev"
 MOVIE_AGENT_ENV_PATH = Path.home() / "Documents" / "movie-agent" / ".env"
 RESTAURANT_MENU_TEXT = """
