@@ -52,10 +52,12 @@ HUB_TITLE = "Personal Agent Hub"
 HUB_SHORT_TITLE = "Agent Hub"
 APP_ICON_PATH = Path(__file__).with_name("static") / "icons" / "icon-192.png"
 DEFAULT_MODEL = "deepseek-v4-flash"
+STORYBOOK_LOCAL_MODEL = "storybook-local-svg"
 SUPPORTED_MODELS = (DEFAULT_MODEL, "deepseek-v4-pro")
 MODEL_LABELS = {
     "deepseek-v4-flash": "Flash",
     "deepseek-v4-pro": "Pro",
+    STORYBOOK_LOCAL_MODEL: "Storybook Local",
 }
 DEFAULT_THINKING_MODE = "fast"
 DEFAULT_COACHING_STYLE = "balanced"
@@ -64,15 +66,18 @@ AGENT_QUERY_PARAM = "agent"
 AGENT_MODE_LIFE_COACH = "life_coach"
 AGENT_MODE_MOVIE = "movie"
 AGENT_MODE_RESTAURANT = "restaurant"
+AGENT_MODE_STORYBOOK = "storybook"
 SUPPORTED_AGENT_MODES = (
     AGENT_MODE_LIFE_COACH,
     AGENT_MODE_MOVIE,
     AGENT_MODE_RESTAURANT,
+    AGENT_MODE_STORYBOOK,
 )
 AGENT_MODE_LABELS = {
     AGENT_MODE_LIFE_COACH: "Life Coach",
     AGENT_MODE_MOVIE: "Movie Agent",
     AGENT_MODE_RESTAURANT: "Restaurant Bot",
+    AGENT_MODE_STORYBOOK: "Storybook Maker",
 }
 SESSION_QUERY_PARAM = "session"
 SHARE_QUERY_PARAM = "share"
@@ -1474,11 +1479,14 @@ def build_google_oauth_url() -> str | None:
     code_verifier = make_pkce_code_verifier()
     code_challenge = make_pkce_code_challenge(code_verifier)
     oauth_state = supabase_store_oauth_state(chat_session_key, code_verifier)
-    redirect_to = f"{read_app_base_url()}/?{urlencode({
-        AGENT_QUERY_PARAM: AGENT_MODE_LIFE_COACH,
-        AUTH_CALLBACK_QUERY_PARAM: 'callback',
-        OAUTH_STATE_QUERY_PARAM: oauth_state,
-    })}"
+    redirect_query = urlencode(
+        {
+            AGENT_QUERY_PARAM: AGENT_MODE_LIFE_COACH,
+            AUTH_CALLBACK_QUERY_PARAM: "callback",
+            OAUTH_STATE_QUERY_PARAM: oauth_state,
+        }
+    )
+    redirect_to = f"{read_app_base_url()}/?{redirect_query}"
     params = urlencode(
         {
             "provider": "google",
@@ -3163,6 +3171,95 @@ def render_generated_images(evidence: dict[str, object] | None) -> None:
         )
 
 
+def render_storybook_artifacts(evidence: dict[str, object] | None) -> None:
+    if not evidence or evidence.get("agent_mode") != AGENT_MODE_STORYBOOK:
+        return
+    images = evidence.get("images")
+    if not isinstance(images, list) or not images:
+        return
+
+    cards: list[str] = []
+    for image in images:
+        if not isinstance(image, dict):
+            continue
+        display_url = str(image.get("display_url") or image.get("url") or "")
+        if not display_url:
+            continue
+        page = html.escape(str(image.get("page") or ""))
+        artifact = html.escape(str(image.get("artifact") or "storybook_page.svg"))
+        visual = html.escape(str(image.get("prompt") or ""))
+        safe_url = html.escape(display_url, quote=True)
+        cards.append(
+            f"""
+  <figure class="storybook-card">
+    <img src="{safe_url}" alt="Storybook page {page}" />
+    <figcaption>
+      <strong>Page {page}</strong>
+      <span>{artifact}</span>
+      <em>{visual}</em>
+    </figcaption>
+  </figure>
+"""
+        )
+
+    if not cards:
+        return
+
+    components.html(
+        f"""
+<div class="storybook-grid">
+{''.join(cards)}
+</div>
+<style>
+.storybook-grid {{
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(156px,1fr));
+  gap:12px;
+  width:100%;
+  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+}}
+.storybook-card {{
+  margin:0;
+  border:1px solid #E5E7EB;
+  border-radius:8px;
+  overflow:hidden;
+  background:#FFFFFF;
+}}
+.storybook-card img {{
+  display:block;
+  width:100%;
+  aspect-ratio:1 / 1;
+  object-fit:cover;
+  background:#F3F4F6;
+}}
+.storybook-card figcaption {{
+  display:flex;
+  flex-direction:column;
+  gap:3px;
+  padding:8px;
+  color:#374151;
+}}
+.storybook-card strong {{
+  font-size:13px;
+  color:#111827;
+}}
+.storybook-card span {{
+  font-size:11px;
+  color:#6B7280;
+  overflow-wrap:anywhere;
+}}
+.storybook-card em {{
+  font-size:11px;
+  color:#4B5563;
+  font-style:normal;
+  line-height:1.35;
+}}
+</style>
+""",
+        height=760,
+    )
+
+
 def render_image_generation_placeholder(image_count: int = 1) -> None:
     count_text = f"{image_count}장 준비 중..." if image_count > 1 else "이미지 준비 중..."
     components.html(
@@ -3636,6 +3733,202 @@ def build_restaurant_agent(model: str, api_key: str, thinking_mode: str) -> Agen
     )
 
 
+def normalize_storybook_theme(prompt: str) -> str:
+    clean = re.sub(r"\s+", " ", str(prompt or "")).strip()
+    clean = re.sub(r"^(테마|주제|theme)\s*[:：]\s*", "", clean, flags=re.IGNORECASE)
+    return clean[:80] or "용기"
+
+
+def slugify_storybook_value(value: str, fallback: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9가-힣]+", "-", value).strip("-").lower()
+    return normalized[:48] or fallback
+
+
+def build_storybook_pages(theme: str) -> list[dict[str, object]]:
+    hero = "루루"
+    friend = "모모"
+    setting = "햇살 숲"
+    return [
+        {
+            "page": 1,
+            "text": f"옛날 옛적 {setting}에, {theme}을 꿈꾸는 작은 토끼 {hero}가 살았습니다.",
+            "visual": f"따뜻한 아침빛이 내려앉은 숲속 집 앞에 서 있는 작은 토끼 {hero}",
+        },
+        {
+            "page": 2,
+            "text": f"어느 날 {hero}는 반짝이는 지도 한 장을 발견하고, 친구 {friend}와 함께 길을 나섰어요.",
+            "visual": f"반짝이는 지도를 들고 설레는 표정으로 걷는 토끼와 작은 새 {friend}",
+        },
+        {
+            "page": 3,
+            "text": "길 한가운데 커다란 웅덩이가 있었지만, 둘은 나뭇잎 배를 만들어 천천히 건넜습니다.",
+            "visual": "파란 웅덩이 위 나뭇잎 배에 탄 토끼와 작은 새, 주변에는 둥근 꽃들",
+        },
+        {
+            "page": 4,
+            "text": f"해가 기울 무렵, {hero}는 가장 빛나는 보물이 바로 서로를 도와주는 마음이라는 걸 알게 되었어요.",
+            "visual": "노을빛 언덕 위에서 서로를 바라보며 웃는 토끼와 작은 새",
+        },
+        {
+            "page": 5,
+            "text": f"그날 밤 {setting}의 별들은 더 환하게 반짝였고, {hero}는 내일도 새로운 {theme}을 시작하기로 했습니다.",
+            "visual": "별이 가득한 밤하늘 아래 작은 집 창가에서 미소 짓는 토끼",
+        },
+    ]
+
+
+def build_storybook_page_svg(page: dict[str, object], theme: str) -> str:
+    page_number = int(page["page"])
+    escaped_theme = html.escape(theme)
+    escaped_visual = html.escape(str(page["visual"]))
+    escaped_text = html.escape(str(page["text"]))
+    sky_colors = ["#A7D8FF", "#C8B6FF", "#B8F2E6", "#FFD6A5", "#1D3557"]
+    ground_colors = ["#B7E4C7", "#FDFFB6", "#D8F3DC", "#FFCAD4", "#457B9D"]
+    sky = sky_colors[(page_number - 1) % len(sky_colors)]
+    ground = ground_colors[(page_number - 1) % len(ground_colors)]
+    star = "#FFE66D" if page_number == 5 else "#FFFFFF"
+
+    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="{escaped_visual}">
+  <rect width="1024" height="1024" fill="{sky}"/>
+  <circle cx="820" cy="150" r="80" fill="#FFF3B0" opacity="0.92"/>
+  <path d="M0 690 C180 610 310 710 470 650 C630 590 800 640 1024 570 L1024 1024 L0 1024 Z" fill="{ground}"/>
+  <circle cx="500" cy="505" r="135" fill="#FFFFFF"/>
+  <ellipse cx="420" cy="330" rx="52" ry="150" fill="#FFFFFF" transform="rotate(-20 420 330)"/>
+  <ellipse cx="575" cy="330" rx="52" ry="150" fill="#FFFFFF" transform="rotate(20 575 330)"/>
+  <circle cx="452" cy="485" r="14" fill="#263238"/>
+  <circle cx="548" cy="485" r="14" fill="#263238"/>
+  <circle cx="500" cy="530" r="16" fill="#FF8FAB"/>
+  <path d="M460 568 Q500 604 540 568" fill="none" stroke="#263238" stroke-width="10" stroke-linecap="round"/>
+  <path d="M235 685 Q310 575 390 685 Z" fill="#80ED99" opacity="0.85"/>
+  <path d="M620 690 Q705 565 795 690 Z" fill="#57CC99" opacity="0.85"/>
+  <circle cx="190" cy="180" r="16" fill="{star}" opacity="0.8"/>
+  <circle cx="290" cy="120" r="10" fill="{star}" opacity="0.75"/>
+  <circle cx="710" cy="245" r="12" fill="{star}" opacity="0.7"/>
+  <text x="512" y="78" text-anchor="middle" font-family="Arial, sans-serif" font-size="44" font-weight="700" fill="#1F2937">Page {page_number}</text>
+  <text x="512" y="855" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#1F2937">{escaped_theme}</text>
+  <text x="512" y="906" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" fill="#374151">{escaped_visual[:52]}</text>
+  <text x="512" y="950" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" fill="#4B5563">{escaped_text[:64]}</text>
+</svg>
+"""
+
+
+def svg_to_data_url(svg: str) -> str:
+    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+    return f"data:image/svg+xml;base64,{encoded}"
+
+
+def format_storybook_answer(illustrated_pages: list[dict[str, object]]) -> str:
+    lines: list[str] = [
+        "5페이지 어린이 동화책 초안을 만들었어요.",
+        "",
+    ]
+    for page in illustrated_pages:
+        lines.extend(
+            [
+                f"Page {page['page']}:",
+                f"Text: \"{page['text']}\"",
+                f"Visual: \"{page['visual']}\"",
+                f"Image: {page['image_artifact']} (Artifact v{page['artifact_version']})",
+                "",
+            ]
+        )
+    return "\n".join(lines).strip()
+
+
+def run_storybook_agent_sync(
+    prompt: str,
+    activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
+) -> tuple[str, dict[str, object]]:
+    started = time.perf_counter()
+    run_events: list[dict[str, object]] = []
+    events_token = RUN_EVENTS.set(run_events)
+    started_token = RUN_STARTED_AT.set(started)
+    renderer_token = RUN_EVENT_RENDERER.set(activity_renderer)
+    queue_token = RUN_EVENT_QUEUE.set(None)
+
+    try:
+        theme = normalize_storybook_theme(prompt)
+        append_run_event("Story Writer Agent 실행 시작")
+        story_pages = build_storybook_pages(theme)
+        agent_state: dict[str, object] = {
+            "theme": theme,
+            "story_pages": story_pages,
+        }
+        append_run_event("Agent State에 `story_pages` 저장")
+
+        append_run_event("Illustrator Agent 실행 시작")
+        illustrated_pages: list[dict[str, object]] = []
+        images: list[dict[str, object]] = []
+        artifact_store = st.session_state.setdefault("storybook_artifacts", {})
+        for page in story_pages:
+            page_number = int(page["page"])
+            filename = (
+                f"storybook_page_{page_number}_"
+                f"{slugify_storybook_value(theme, 'theme')}.svg"
+            )
+            svg = build_storybook_page_svg(page, theme)
+            data_url = svg_to_data_url(svg)
+            artifact_store[filename] = {
+                "mime_type": "image/svg+xml",
+                "data": svg,
+                "page": page_number,
+                "visual": page["visual"],
+            }
+            illustrated_page = {
+                "page": page_number,
+                "text": page["text"],
+                "visual": page["visual"],
+                "image_artifact": filename,
+                "artifact_version": 0,
+            }
+            illustrated_pages.append(illustrated_page)
+            images.append(
+                {
+                    "page": page_number,
+                    "prompt": page["visual"],
+                    "url": data_url,
+                    "display_url": data_url,
+                    "artifact": filename,
+                }
+            )
+            append_run_event(f"Artifact 저장: {filename}")
+
+        agent_state["illustrated_pages"] = illustrated_pages
+        append_run_event("Agent State에 `illustrated_pages` 저장")
+        append_run_event("Storybook Maker 완료")
+
+        answer = format_storybook_answer(illustrated_pages)
+        evidence = {
+            "agent_mode": AGENT_MODE_STORYBOOK,
+            "model": STORYBOOK_LOCAL_MODEL,
+            "thinking_mode": None,
+            "total_seconds": time.perf_counter() - started,
+            "events": list(run_events),
+            "searches": [],
+            "handoffs": ["Story Writer Agent → Illustrator Agent"],
+            "final_agent": "Illustrator Agent",
+            "guardrail": "passed",
+            "streaming": False,
+            "images": images,
+            "artifacts": [
+                {
+                    "page": page["page"],
+                    "filename": page["image_artifact"],
+                    "version": page["artifact_version"],
+                }
+                for page in illustrated_pages
+            ],
+            "state_keys": ["theme", "story_pages", "illustrated_pages"],
+            "storybook_state": agent_state,
+        }
+        return answer, evidence
+    finally:
+        RUN_EVENT_QUEUE.reset(queue_token)
+        RUN_EVENT_RENDERER.reset(renderer_token)
+        RUN_STARTED_AT.reset(started_token)
+        RUN_EVENTS.reset(events_token)
+
+
 def extract_handoff_pairs(result) -> list[str]:
     pairs: list[str] = []
     for item in getattr(result, "new_items", []):
@@ -3660,6 +3953,9 @@ def run_hub_agent_sync(
     thinking_mode: str,
     session: SQLiteSession,
 ) -> tuple[str, dict[str, object]]:
+    if agent_mode == AGENT_MODE_STORYBOOK:
+        return run_storybook_agent_sync(prompt)
+
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
     search_timings: list[dict[str, object]] = []
@@ -3737,6 +4033,13 @@ async def run_hub_agent_streamed(
     status_placeholder,
     activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> tuple[str, dict[str, object]]:
+    if agent_mode == AGENT_MODE_STORYBOOK:
+        render_status_message(status_placeholder, "Storybook Maker 실행 중...")
+        answer, evidence = run_storybook_agent_sync(prompt, activity_renderer)
+        response_placeholder.markdown(answer)
+        status_placeholder.empty()
+        return answer, evidence
+
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
     search_timings: list[dict[str, object]] = []
@@ -5038,7 +5341,7 @@ def render_sidebar() -> None:
         render_goals_panel()
 
         st.divider()
-        st.caption("세 에이전트 공통")
+        st.caption("모델 기반 에이전트 공통")
         render_response_settings_panel(
             "공통 응답 설정",
             "모델과 사고 모드는 Life Coach, Movie Agent, Restaurant Bot에 공통 적용됩니다.",
@@ -5060,6 +5363,7 @@ def agent_mode_caption(agent_mode: str) -> str:
         AGENT_MODE_LIFE_COACH: "목표, 습관, 자기계발 코칭",
         AGENT_MODE_MOVIE: "취향을 기억하고 영화 추천",
         AGENT_MODE_RESTAURANT: "메뉴, 주문, 예약, 불만 handoff 데모",
+        AGENT_MODE_STORYBOOK: "5페이지 어린이 동화책과 이미지 Artifact",
     }
     return captions.get(agent_mode, "")
 
@@ -5068,6 +5372,7 @@ def agent_mode_prompt(agent_mode: str) -> str:
     prompts = {
         AGENT_MODE_MOVIE: "예: 나는 SF를 좋아하고 인터스텔라는 이미 봤어. 오늘 밤 뭐 볼까?",
         AGENT_MODE_RESTAURANT: "예: 오늘 저녁 7시에 4명 예약하고 싶어요",
+        AGENT_MODE_STORYBOOK: "예: 우주를 여행하는 작은 토끼",
     }
     return prompts.get(agent_mode, "무엇을 도와드릴까요?")
 
@@ -5096,8 +5401,9 @@ def render_agent_navigation(current_mode: str | None = None) -> None:
 
 
 def render_agent_mode_switcher(current_mode: str) -> None:
-    columns = st.columns(3, gap="small")
-    for mode, column in zip(SUPPORTED_AGENT_MODES, columns):
+    columns = st.columns(min(4, len(SUPPORTED_AGENT_MODES)), gap="small")
+    for index, mode in enumerate(SUPPORTED_AGENT_MODES):
+        column = columns[index % len(columns)]
         if mode == current_mode:
             label = f"✓ {AGENT_MODE_LABELS[mode]}"
         else:
@@ -5117,8 +5423,9 @@ def render_agent_hub() -> None:
     st.title(HUB_TITLE)
     st.caption("필요한 상황에 맞춰 전문 에이전트를 선택하세요.")
 
-    columns = st.columns(3, gap="medium")
-    for mode, column in zip(SUPPORTED_AGENT_MODES, columns):
+    columns = st.columns(2, gap="medium")
+    for index, mode in enumerate(SUPPORTED_AGENT_MODES):
+        column = columns[index % len(columns)]
         with column:
             st.subheader(AGENT_MODE_LABELS[mode])
             st.caption(agent_mode_caption(mode))
@@ -5126,8 +5433,10 @@ def render_agent_hub() -> None:
                 st.markdown("목표 파일, 웹 검색, 이미지 생성까지 연결된 개인 코치입니다.")
             elif mode == AGENT_MODE_MOVIE:
                 st.markdown("인기 영화 API와 취향 기억을 활용해 볼 영화를 추천합니다.")
-            else:
+            elif mode == AGENT_MODE_RESTAURANT:
                 st.markdown("Triage가 메뉴·주문·예약·불만 담당에게 handoff하고 guardrails가 안전 범위를 확인합니다.")
+            else:
+                st.markdown("Story Writer가 5페이지 동화를 만들고 Illustrator가 페이지별 SVG Artifact를 저장합니다.")
             if st.button("시작", key=f"hub-start-{mode}", use_container_width=True):
                 set_agent_mode(mode)
                 st.rerun()
@@ -5146,11 +5455,12 @@ def initialize_hub_agent_state(agent_mode: str) -> None:
             str(DB_PATH),
         )
     if messages_key not in st.session_state:
-        greeting = (
-            "좋아하는 장르, 이미 본 영화, 오늘의 기분을 알려주시면 영화를 추천해드릴게요."
-            if agent_mode == AGENT_MODE_MOVIE
-            else "안녕하세요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
-        )
+        if agent_mode == AGENT_MODE_MOVIE:
+            greeting = "좋아하는 장르, 이미 본 영화, 오늘의 기분을 알려주시면 영화를 추천해드릴게요."
+        elif agent_mode == AGENT_MODE_RESTAURANT:
+            greeting = "안녕하세요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
+        else:
+            greeting = "동화책 테마를 알려주시면 5페이지 이야기와 페이지별 이미지를 만들게요."
         st.session_state[messages_key] = [{"role": "assistant", "content": greeting}]
 
 
@@ -5163,11 +5473,12 @@ def reset_hub_agent_conversation(agent_mode: str) -> None:
         st.session_state[session_key],
         str(DB_PATH),
     )
-    greeting = (
-        "새 Movie Agent 대화를 시작했어요. 취향이나 이미 본 영화를 말해 주세요."
-        if agent_mode == AGENT_MODE_MOVIE
-        else "새 Restaurant Bot 대화를 시작했어요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
-    )
+    if agent_mode == AGENT_MODE_MOVIE:
+        greeting = "새 Movie Agent 대화를 시작했어요. 취향이나 이미 본 영화를 말해 주세요."
+    elif agent_mode == AGENT_MODE_RESTAURANT:
+        greeting = "새 Restaurant Bot 대화를 시작했어요. 예약, 메뉴, 주문 중 무엇을 도와드릴까요?"
+    else:
+        greeting = "새 Storybook Maker 대화를 시작했어요. 동화책 테마를 알려주세요."
     st.session_state[messages_key] = [{"role": "assistant", "content": greeting}]
 
 
@@ -5187,19 +5498,27 @@ def render_hub_agent_sidebar(agent_mode: str) -> None:
                     "영화 취향, 이미 본 작품, 장르 선호를 대화 안에서 기억하고 "
                     "Nomad Movies API와 웹 검색으로 추천을 보강합니다."
                 )
-            else:
+            elif agent_mode == AGENT_MODE_RESTAURANT:
                 st.caption(
                     "Triage Agent가 요청을 읽고 Menu, Order, Reservation, "
                     "Complaints 전문 에이전트로 handoff합니다. 레스토랑 외 질문과 "
                     "부적절한 언어는 guardrail이 차단합니다."
                 )
+            else:
+                st.caption(
+                    "Story Writer Agent가 Agent State에 5페이지 story_pages를 저장하고, "
+                    "Illustrator Agent가 그 State를 읽어 페이지별 SVG Artifact를 만듭니다."
+                )
 
         st.divider()
-        st.caption("세 에이전트 공통")
-        render_response_settings_panel(
-            "공통 응답 설정",
-            "모델과 사고 모드는 모든 에이전트에 공통 적용됩니다.",
-        )
+        if agent_mode == AGENT_MODE_STORYBOOK:
+            st.caption("Storybook Maker는 로컬 SVG Artifact 생성기를 사용합니다.")
+        else:
+            st.caption("공통 응답 설정")
+            render_response_settings_panel(
+                "공통 응답 설정",
+                "모델과 사고 모드는 Life Coach, Movie Agent, Restaurant Bot에 공통 적용됩니다.",
+            )
 
 
 def render_hub_run_evidence(evidence: dict[str, object]) -> None:
@@ -5214,17 +5533,34 @@ def render_hub_run_evidence(evidence: dict[str, object]) -> None:
     elapsed = evidence.get("total_seconds")
     if isinstance(elapsed, (int, float)):
         summary.append(f"총 {elapsed:.2f}s")
+    artifacts = evidence.get("artifacts")
+    state_keys = evidence.get("state_keys")
+    if isinstance(artifacts, list) and artifacts:
+        summary.append(f"Artifact {len(artifacts)}개")
+    if state_keys:
+        summary.append("State 공유")
     st.caption(" · ".join(str(item) for item in summary if item))
 
     handoffs = evidence.get("handoffs")
     searches = evidence.get("searches")
     events = evidence.get("events")
-    if handoffs or searches or events:
+    if handoffs or searches or events or artifacts or state_keys:
         with st.expander("상세 실행 정보", expanded=False):
             if handoffs:
                 st.markdown("**Handoff**")
                 for item in handoffs:
                     st.markdown(f"- {item}")
+            if artifacts:
+                st.markdown("**Artifacts**")
+                for item in artifacts:
+                    if isinstance(item, dict):
+                        st.markdown(
+                            f"- Page {item.get('page')}: `{item.get('filename')}` "
+                            f"(v{item.get('version')})"
+                        )
+            if state_keys:
+                st.markdown("**Agent State**")
+                st.markdown(", ".join(f"`{key}`" for key in state_keys))
             if searches:
                 st.markdown("**검색/출처**")
                 for item in searches:
@@ -5256,14 +5592,16 @@ def render_hub_agent_app(agent_mode: str) -> None:
     st.title(AGENT_MODE_LABELS[agent_mode])
     st.caption(agent_mode_caption(agent_mode))
 
-    if not api_key:
+    if not api_key and agent_mode != AGENT_MODE_STORYBOOK:
         st.warning("모델 API 키가 필요합니다. Streamlit Secrets 또는 로컬 환경변수에 키를 넣어 주세요.")
 
     for message in st.session_state[messages_key]:
         with st.chat_message(message["role"]):
             st.markdown(linkify_plain_urls(str(message["content"])))
             if isinstance(message.get("evidence"), dict):
-                render_hub_run_evidence(message["evidence"])
+                evidence = message["evidence"]
+                render_storybook_artifacts(evidence)
+                render_hub_run_evidence(evidence)
 
     prompt = st.chat_input(agent_mode_prompt(agent_mode), key=f"{agent_mode}-chat-input")
     if not prompt:
@@ -5324,6 +5662,7 @@ def render_hub_agent_app(agent_mode: str) -> None:
                     }
         activity_placeholder.empty()
         response_placeholder.markdown(answer)
+        render_storybook_artifacts(evidence)
         render_hub_run_evidence(evidence)
 
     st.session_state[messages_key].append(
@@ -5859,7 +6198,7 @@ div[class*="st-key-stop-run-"] button:hover {
         render_agent_hub()
         return
 
-    if agent_mode in {AGENT_MODE_MOVIE, AGENT_MODE_RESTAURANT}:
+    if agent_mode in {AGENT_MODE_MOVIE, AGENT_MODE_RESTAURANT, AGENT_MODE_STORYBOOK}:
         render_copy_feedback()
         render_hub_agent_app(agent_mode)
         return

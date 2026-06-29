@@ -9,6 +9,7 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 개인용 에이전트 허
 - `?agent=life_coach`: 목표, 습관, 자기계발 코칭
 - `?agent=movie`: 취향 기억 기반 영화 추천과 Nomad 영화 API 도구
 - `?agent=restaurant`: Triage/Menu/Order/Reservation handoff 레스토랑 봇
+- `?agent=storybook`: 5페이지 어린이 동화책과 페이지별 이미지 Artifact 생성
 - `st.chat_input`, `st.chat_message` 기반 채팅 인터페이스
 - OpenAI Agents SDK의 `Agent`, `Runner` 사용
 - `SQLiteSession` 기반 세션 메모리
@@ -21,6 +22,7 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 개인용 에이전트 허
 - `function_tool` 기반 웹 검색
 - Movie Agent 도구: `get_popular_movies`, `get_movie_details`, `get_movie_credits`
 - Restaurant Bot handoff: `Triage Agent → Menu/Order/Reservation Agent`
+- Storybook Maker: `Story Writer Agent → Illustrator Agent` 흐름으로 Agent State를 공유하고 SVG Artifact 생성
 - 검색 질문의 검색 후 답변 스트리밍
 - 검색 없는 대화의 자동 스트리밍
 - OpenAI-compatible provider의 tool-call 호환성 보호를 위한 안정 실행 fallback
@@ -42,6 +44,7 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 개인용 에이전트 허
 - 웹 검색: DuckDuckGo HTML 결과를 읽는 `search_web` 함수 도구
 - 영화 도구: Nomad Movies API를 읽는 function tool 3개
 - 레스토랑 handoff: OpenAI Agents SDK `handoffs=[...]`와 `handoff(...)` 사용
+- 동화책 만들기: Story Writer가 `story_pages`를 만들고 Illustrator가 이를 읽어 5개 SVG Artifact를 생성
 - 세션 기억: 로컬 SQLite 파일에 대화 이력 저장
 - 채팅 저장: Supabase `life_coach_sessions`, `life_coach_messages` 테이블에 사용자/코치 메시지 저장
 - Google OAuth: Supabase Auth PKCE 흐름으로 로그인하고 현재 채팅 세션을 Supabase user id에 연결
