@@ -3176,86 +3176,32 @@ def render_storybook_artifacts(evidence: dict[str, object] | None) -> None:
     if not isinstance(images, list) or not images:
         return
 
-    cards: list[str] = []
+    valid_images: list[dict[str, object]] = []
     for image in images:
         if not isinstance(image, dict):
             continue
         display_url = str(image.get("display_url") or image.get("url") or "")
         if not display_url:
             continue
-        page = html.escape(str(image.get("page") or ""))
-        artifact = html.escape(str(image.get("artifact") or "storybook_page.svg"))
-        visual = html.escape(str(image.get("prompt") or ""))
-        safe_url = html.escape(display_url, quote=True)
-        cards.append(
-            f"""
-  <figure class="storybook-card">
-    <img src="{safe_url}" alt="Storybook page {page}" />
-    <figcaption>
-      <strong>Page {page}</strong>
-      <span>{artifact}</span>
-      <em>{visual}</em>
-    </figcaption>
-  </figure>
-"""
-        )
+        valid_images.append(dict(image, display_url=display_url))
 
-    if not cards:
+    if not valid_images:
         return
 
-    components.html(
-        f"""
-<div class="storybook-grid">
-{''.join(cards)}
-</div>
-<style>
-.storybook-grid {{
-  display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(156px,1fr));
-  gap:12px;
-  width:100%;
-  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-}}
-.storybook-card {{
-  margin:0;
-  border:1px solid #E5E7EB;
-  border-radius:8px;
-  overflow:hidden;
-  background:#FFFFFF;
-}}
-.storybook-card img {{
-  display:block;
-  width:100%;
-  aspect-ratio:1 / 1;
-  object-fit:cover;
-  background:#F3F4F6;
-}}
-.storybook-card figcaption {{
-  display:flex;
-  flex-direction:column;
-  gap:3px;
-  padding:8px;
-  color:#374151;
-}}
-.storybook-card strong {{
-  font-size:13px;
-  color:#111827;
-}}
-.storybook-card span {{
-  font-size:11px;
-  color:#6B7280;
-  overflow-wrap:anywhere;
-}}
-.storybook-card em {{
-  font-size:11px;
-  color:#4B5563;
-  font-style:normal;
-  line-height:1.35;
-}}
-</style>
-""",
-        height=760,
-    )
+    st.markdown("**생성된 페이지 이미지**")
+    columns = st.columns(2, gap="medium")
+    for index, image in enumerate(valid_images):
+        page = str(image.get("page") or index + 1)
+        artifact = str(image.get("artifact") or "storybook_page.png")
+        visual = str(image.get("prompt") or "")
+        with columns[index % len(columns)]:
+            st.image(
+                str(image["display_url"]),
+                caption=f"Page {page} · {artifact}",
+                use_container_width=True,
+            )
+            if visual:
+                st.caption(visual)
 
 
 def render_image_generation_placeholder(image_count: int = 1) -> None:
@@ -3959,13 +3905,14 @@ def run_storybook_agent_sync(
     api_key: str,
     thinking_mode: str,
     activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
+    event_queue: Queue | None = None,
 ) -> tuple[str, dict[str, object]]:
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
     events_token = RUN_EVENTS.set(run_events)
     started_token = RUN_STARTED_AT.set(started)
     renderer_token = RUN_EVENT_RENDERER.set(activity_renderer)
-    queue_token = RUN_EVENT_QUEUE.set(None)
+    queue_token = RUN_EVENT_QUEUE.set(event_queue)
 
     try:
         theme = normalize_storybook_theme(prompt)
@@ -4015,7 +3962,6 @@ def run_storybook_agent_sync(
 
         illustrated_pages: list[dict[str, object]] = []
         images: list[dict[str, object]] = []
-        artifact_store = st.session_state.setdefault("storybook_artifacts", {})
         for page in story_pages:
             page_number = int(page["page"])
             illustration = illustration_by_page[page_number]
@@ -4025,13 +3971,6 @@ def run_storybook_agent_sync(
                 f"{slugify_storybook_value(title, 'story')}.png"
             )
             image_result = build_pollinations_image_result(image_prompt)
-            artifact_store[filename] = {
-                "mime_type": "image/png",
-                "url": image_result["url"],
-                "page": page_number,
-                "visual": page["visual"],
-                "image_prompt": image_prompt,
-            }
             illustrated_page = {
                 "page": page_number,
                 "text": page["text"],
@@ -4091,6 +4030,60 @@ def run_storybook_agent_sync(
         RUN_EVENT_RENDERER.reset(renderer_token)
         RUN_STARTED_AT.reset(started_token)
         RUN_EVENTS.reset(events_token)
+
+
+def run_storybook_agent_with_live_status(
+    prompt: str,
+    model: str,
+    api_key: str,
+    thinking_mode: str,
+    activity_placeholder,
+    status_placeholder,
+) -> tuple[str, dict[str, object]]:
+    started = time.perf_counter()
+    event_queue: Queue = Queue()
+    latest_events: list[dict[str, object]] = []
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(
+            run_storybook_agent_sync,
+            prompt,
+            model,
+            api_key,
+            thinking_mode,
+            None,
+            event_queue,
+        )
+
+        while not future.done():
+            while True:
+                try:
+                    latest_events = event_queue.get_nowait()
+                except Empty:
+                    break
+
+            if latest_events:
+                activity_placeholder.markdown(format_run_events_markdown(latest_events))
+                message = str(latest_events[-1].get("message") or "Storybook Maker 실행 중...")
+            else:
+                message = "Storybook Maker 실행 중..."
+            render_status_message(
+                status_placeholder,
+                message,
+                time.perf_counter() - started,
+            )
+            time.sleep(0.25)
+
+        while True:
+            try:
+                latest_events = event_queue.get_nowait()
+            except Empty:
+                break
+
+        answer, evidence = future.result()
+        if latest_events:
+            activity_placeholder.markdown(format_run_events_markdown(latest_events))
+        return answer, evidence
 
 
 def extract_handoff_pairs(result) -> list[str]:
@@ -5780,13 +5773,13 @@ def render_hub_agent_app(agent_mode: str) -> None:
 
         try:
             if agent_mode == AGENT_MODE_STORYBOOK:
-                render_status_message(status_placeholder, "Storybook Maker 실행 중...")
-                answer, evidence = run_storybook_agent_sync(
+                answer, evidence = run_storybook_agent_with_live_status(
                     prompt,
                     model,
                     api_key,
                     thinking_mode,
-                    render_activity,
+                    activity_placeholder,
+                    status_placeholder,
                 )
                 status_placeholder.empty()
                 response_placeholder.markdown(answer)
@@ -6166,7 +6159,7 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
 }
 [data-testid="stAppViewContainer"] .main .block-container,
 [data-testid="stMainBlockContainer"] {
-  padding-bottom: 10.5rem;
+  padding-bottom: 12rem;
 }
 [data-testid="stBottom"] {
   padding-bottom: 1rem;
@@ -6182,7 +6175,7 @@ div[class*="st-key-goals-file-uploader-"] [data-testid="stFileUploaderFile"] {
   min-height: 42px;
   padding: 0.55rem 0.75rem;
   position: fixed;
-  bottom: 10.25rem;
+  bottom: 11.75rem;
   left: 50%;
   right: auto;
   transform: translateX(-50%);
@@ -6338,10 +6331,10 @@ div[class*="st-key-stop-run-"] button:hover {
 @media (min-width: 900px) {
   [data-testid="stAppViewContainer"] .main .block-container,
   [data-testid="stMainBlockContainer"] {
-    padding-bottom: 10.5rem;
+    padding-bottom: 12rem;
   }
   .run-status-box {
-    bottom: 6.75rem;
+    bottom: 8.25rem;
     width: min(44rem, calc(100vw - 2rem));
   }
   body:has([data-testid="stSidebar"][aria-expanded="true"]) .run-status-box {
