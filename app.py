@@ -168,6 +168,9 @@ POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt/"
 IMAGE_WIDTH = 1024
 IMAGE_HEIGHT = 1024
 MAX_IMAGE_CALLS_PER_MESSAGE = 2
+STORYBOOK_IMAGE_FETCH_ATTEMPTS = 7
+STORYBOOK_IMAGE_RETRY_DELAY_SECONDS = 1.5
+STORYBOOK_IMAGE_REGENERATION_ATTEMPTS = 2
 IMAGE_REQUEST_HINTS = (
     "비전보드",
     "비전 보드",
@@ -2614,9 +2617,12 @@ def prompt_likely_needs_image(prompt: str) -> bool:
     return any(hint in normalized for hint in IMAGE_REQUEST_HINTS)
 
 
-def build_pollinations_image_result(prompt: str) -> dict[str, str]:
+def build_pollinations_image_result(prompt: str, seed: int | None = None) -> dict[str, str]:
     clean = " ".join(prompt.split()).strip()
-    seed = int(time.time() * 1000) % 100000
+    if seed is None:
+        seed_source = f"{clean}:{time.time_ns()}:{uuid.uuid4().hex}"
+        seed = int(hashlib.sha256(seed_source.encode("utf-8")).hexdigest()[:8], 16)
+    seed = seed % 1000000
     params = urlencode(
         {
             "width": IMAGE_WIDTH,
@@ -3188,16 +3194,41 @@ def render_storybook_artifacts(evidence: dict[str, object] | None) -> None:
     if not valid_images:
         return
 
+    description_by_page: dict[int, str] = {}
+    storybook_state = evidence.get("storybook_state")
+    if isinstance(storybook_state, dict):
+        state_pages = storybook_state.get("illustrated_pages") or storybook_state.get("story_pages")
+        if isinstance(state_pages, list):
+            for state_page in state_pages:
+                if not isinstance(state_page, dict):
+                    continue
+                try:
+                    state_page_number = int(state_page.get("page") or 0)
+                except (TypeError, ValueError):
+                    continue
+                state_description = str(
+                    state_page.get("display_description") or state_page.get("visual") or ""
+                ).strip()
+                if state_page_number and state_description:
+                    description_by_page[state_page_number] = state_description
+
     st.markdown("**생성된 페이지 이미지**")
     columns = st.columns(2, gap="medium")
     for index, image in enumerate(valid_images):
-        page = str(image.get("page") or index + 1)
+        page_value = image.get("page") or index + 1
+        page = str(page_value)
         artifact = str(image.get("artifact") or "storybook_page.png")
-        visual = str(image.get("prompt") or "")
+        visual = str(image.get("description") or image.get("prompt") or "")
+        try:
+            state_visual = description_by_page.get(int(page_value))
+        except (TypeError, ValueError):
+            state_visual = None
+        if state_visual and (not visual or not re.search(r"[가-힣]", visual)):
+            visual = state_visual
         with columns[index % len(columns)]:
             st.image(
                 str(image["display_url"]),
-                caption=f"Page {page} · {artifact}",
+                caption=f"{page}페이지 · {artifact}",
                 use_container_width=True,
             )
             if visual:
@@ -3260,6 +3291,75 @@ def fetch_image_data_url(url: str) -> str | None:
     return f"data:{content_type};base64,{encoded}"
 
 
+def build_data_url(content_type: str, data: bytes) -> str:
+    encoded = base64.b64encode(data).decode("ascii")
+    return f"data:{content_type};base64,{encoded}"
+
+
+def wrap_svg_text(text: str, max_chars: int = 44, max_lines: int = 5) -> list[str]:
+    words = " ".join(text.split()).split()
+    if not words:
+        return []
+
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        next_line = f"{current} {word}".strip()
+        if current and len(next_line) > max_chars:
+            lines.append(current)
+            current = word
+        else:
+            current = next_line
+        if len(lines) >= max_lines:
+            break
+
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if len(lines) == max_lines and len(words) > len(" ".join(lines).split()):
+        lines[-1] = lines[-1].rstrip(".") + "..."
+    return lines
+
+
+def build_storybook_fallback_data_url(page: object, description: str) -> str:
+    page_label = html.escape(f"{page}페이지", quote=True)
+    prompt_lines = wrap_svg_text(description)
+    text_nodes = []
+    for index, line in enumerate(prompt_lines):
+        safe_line = html.escape(line, quote=True)
+        text_nodes.append(
+            f'<text x="512" y="{610 + (index * 34)}" text-anchor="middle" '
+            f'font-size="24" fill="#58606f">{safe_line}</text>'
+        )
+    prompt_text = "\n".join(text_nodes)
+    svg = f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fff3c4"/>
+      <stop offset="0.52" stop-color="#b8e6ff"/>
+      <stop offset="1" stop-color="#f8c8dd"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="50%" cy="40%" r="42%">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.95"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="1024" height="1024" rx="48" fill="url(#sky)"/>
+  <circle cx="512" cy="390" r="330" fill="url(#glow)"/>
+  <path d="M248 540 C360 488 478 488 512 562 C548 488 668 488 776 540 L776 704 C650 662 560 684 512 762 C464 684 374 662 248 704 Z" fill="#fffaf0" stroke="#b08a5b" stroke-width="12"/>
+  <path d="M512 562 L512 762" stroke="#c49a6c" stroke-width="10"/>
+  <path d="M246 704 C360 660 464 684 512 762 C560 684 664 660 778 704" fill="none" stroke="#e5cba6" stroke-width="8"/>
+  <circle cx="338" cy="250" r="12" fill="#ffffff"/>
+  <circle cx="702" cy="218" r="9" fill="#ffffff"/>
+  <circle cx="790" cy="364" r="7" fill="#ffffff"/>
+  <path d="M512 198 L532 252 L590 256 L544 292 L558 350 L512 318 L466 350 L480 292 L434 256 L492 252 Z" fill="#ffcf66"/>
+  <text x="512" y="132" text-anchor="middle" font-family="Arial, sans-serif" font-size="46" font-weight="700" fill="#2f3645">{page_label}</text>
+  <text x="512" y="858" text-anchor="middle" font-family="Arial, sans-serif" font-size="26" font-weight="700" fill="#2f3645">이미지 아티팩트를 준비하고 있어요</text>
+  <text x="512" y="900" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" fill="#58606f">이미지 서버가 느리면 새로고침하거나 다시 실행해 주세요.</text>
+  <g font-family="Arial, sans-serif">{prompt_text}</g>
+</svg>"""
+    return build_data_url("image/svg+xml", svg.encode("utf-8"))
+
+
 def fetch_image_data_url_with_retries(
     url: str,
     attempts: int = 4,
@@ -3283,13 +3383,40 @@ def prepare_storybook_images_for_display(
     def prepare_one(image: dict[str, object]) -> dict[str, object]:
         display_image = dict(image)
         url = str(display_image.get("url") or "")
-        data_url = fetch_image_data_url_with_retries(url)
+        prompt = str(display_image.get("prompt") or "")
+        description = str(display_image.get("description") or prompt)
+        data_url = fetch_image_data_url_with_retries(
+            url,
+            attempts=STORYBOOK_IMAGE_FETCH_ATTEMPTS,
+            delay_seconds=STORYBOOK_IMAGE_RETRY_DELAY_SECONDS,
+        )
+        regenerated = False
+        for _ in range(STORYBOOK_IMAGE_REGENERATION_ATTEMPTS):
+            if data_url:
+                break
+            retry_result = build_pollinations_image_result(prompt)
+            url = retry_result["url"]
+            regenerated = True
+            data_url = fetch_image_data_url_with_retries(
+                url,
+                attempts=STORYBOOK_IMAGE_FETCH_ATTEMPTS,
+                delay_seconds=STORYBOOK_IMAGE_RETRY_DELAY_SECONDS,
+            )
         if data_url:
+            display_image["url"] = url
             display_image["display_url"] = data_url
             display_image["embedded"] = True
+            if regenerated:
+                display_image["regenerated"] = True
+        else:
+            display_image["display_url"] = build_storybook_fallback_data_url(
+                display_image.get("page") or "?",
+                description,
+            )
+            display_image["provider_pending"] = True
         return display_image
 
-    with ThreadPoolExecutor(max_workers=min(5, len(images))) as executor:
+    with ThreadPoolExecutor(max_workers=min(2, len(images))) as executor:
         return list(executor.map(prepare_one, images))
 
 
@@ -3758,6 +3885,7 @@ Schema:
     {
       "page": 1,
       "image_prompt": "English image generation prompt",
+      "display_description": "Korean image description for the user",
       "style_notes": "short Korean style note"
     }
   ]
@@ -3767,6 +3895,7 @@ Rules:
 - Exactly one image_prompt per story page.
 - Keep the same main characters visually consistent across all pages.
 - Prompts must be in English, vivid, child-safe, and picture-book style.
+- display_description must be Korean and should briefly describe the page image for the user.
 - Do not request text, captions, letters, watermarks, logos, or speech bubbles in the image.
 """.strip()
 
@@ -3823,6 +3952,10 @@ def normalize_storybook_pages(payload: object, theme: str) -> tuple[str, list[di
     return title[:80] or f"{theme} 이야기", pages
 
 
+def contains_hangul(text: str) -> bool:
+    return bool(re.search(r"[가-힣]", text))
+
+
 def normalize_illustration_pages(
     payload: object,
     story_pages: list[dict[str, object]],
@@ -3857,10 +3990,18 @@ def normalize_illustration_pages(
             " ",
             str(raw_page.get("style_notes") or "따뜻한 그림책 스타일"),
         ).strip()
+        display_description = re.sub(
+            r"\s+",
+            " ",
+            str(raw_page.get("display_description") or story_page["visual"]),
+        ).strip()
+        if not contains_hangul(display_description):
+            display_description = str(story_page["visual"])
         normalized.append(
             {
                 "page": page_number,
                 "image_prompt": image_prompt[:900],
+                "display_description": display_description[:360],
                 "style_notes": style_notes[:180],
             }
         )
@@ -4009,6 +4150,7 @@ def run_storybook_agent_sync(
                 "text": page["text"],
                 "visual": page["visual"],
                 "image_prompt": image_prompt,
+                "display_description": illustration["display_description"],
                 "style_notes": illustration["style_notes"],
                 "image_artifact": filename,
                 "artifact_version": 0,
@@ -4018,6 +4160,7 @@ def run_storybook_agent_sync(
                 {
                     "page": page_number,
                     "prompt": image_prompt,
+                    "description": illustration["display_description"],
                     "url": image_result["url"],
                     "artifact": filename,
                 }
