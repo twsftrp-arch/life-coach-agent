@@ -52,12 +52,10 @@ HUB_TITLE = "Personal Agent Hub"
 HUB_SHORT_TITLE = "Agent Hub"
 APP_ICON_PATH = Path(__file__).with_name("static") / "icons" / "icon-192.png"
 DEFAULT_MODEL = "deepseek-v4-flash"
-STORYBOOK_LOCAL_MODEL = "storybook-local-svg"
 SUPPORTED_MODELS = (DEFAULT_MODEL, "deepseek-v4-pro")
 MODEL_LABELS = {
     "deepseek-v4-flash": "Flash",
     "deepseek-v4-pro": "Pro",
-    STORYBOOK_LOCAL_MODEL: "Storybook Local",
 }
 DEFAULT_THINKING_MODE = "fast"
 DEFAULT_COACHING_STYLE = "balanced"
@@ -3744,77 +3742,197 @@ def slugify_storybook_value(value: str, fallback: str) -> str:
     return normalized[:48] or fallback
 
 
-def build_storybook_pages(theme: str) -> list[dict[str, object]]:
-    hero = "루루"
-    friend = "모모"
-    setting = "햇살 숲"
-    return [
-        {
-            "page": 1,
-            "text": f"옛날 옛적 {setting}에, {theme}을 꿈꾸는 작은 토끼 {hero}가 살았습니다.",
-            "visual": f"따뜻한 아침빛이 내려앉은 숲속 집 앞에 서 있는 작은 토끼 {hero}",
-        },
-        {
-            "page": 2,
-            "text": f"어느 날 {hero}는 반짝이는 지도 한 장을 발견하고, 친구 {friend}와 함께 길을 나섰어요.",
-            "visual": f"반짝이는 지도를 들고 설레는 표정으로 걷는 토끼와 작은 새 {friend}",
-        },
-        {
-            "page": 3,
-            "text": "길 한가운데 커다란 웅덩이가 있었지만, 둘은 나뭇잎 배를 만들어 천천히 건넜습니다.",
-            "visual": "파란 웅덩이 위 나뭇잎 배에 탄 토끼와 작은 새, 주변에는 둥근 꽃들",
-        },
-        {
-            "page": 4,
-            "text": f"해가 기울 무렵, {hero}는 가장 빛나는 보물이 바로 서로를 도와주는 마음이라는 걸 알게 되었어요.",
-            "visual": "노을빛 언덕 위에서 서로를 바라보며 웃는 토끼와 작은 새",
-        },
-        {
-            "page": 5,
-            "text": f"그날 밤 {setting}의 별들은 더 환하게 반짝였고, {hero}는 내일도 새로운 {theme}을 시작하기로 했습니다.",
-            "visual": "별이 가득한 밤하늘 아래 작은 집 창가에서 미소 짓는 토끼",
-        },
-    ]
+STORYBOOK_WRITER_INSTRUCTIONS = """
+You are Story Writer Agent for a Korean children's picture book app.
+
+Write a fresh, original five-page children's story from the user's theme.
+Return ONLY valid JSON. Do not use markdown fences.
+
+Schema:
+{
+  "title": "short Korean title",
+  "pages": [
+    {"page": 1, "text": "Korean page text", "visual": "Korean visual description"},
+    ...
+  ]
+}
+
+Rules:
+- Exactly 5 pages, page numbers 1 through 5.
+- Each page text must be 1-2 short child-friendly Korean sentences.
+- Make the story specific to the theme, not a reusable template.
+- Include a gentle emotional arc and a warm ending.
+- Each visual must describe what should be illustrated on that page.
+- No unsafe, scary, violent, or adult content.
+""".strip()
 
 
-def build_storybook_page_svg(page: dict[str, object], theme: str) -> str:
-    page_number = int(page["page"])
-    escaped_theme = html.escape(theme)
-    escaped_visual = html.escape(str(page["visual"]))
-    escaped_text = html.escape(str(page["text"]))
-    sky_colors = ["#A7D8FF", "#C8B6FF", "#B8F2E6", "#FFD6A5", "#1D3557"]
-    ground_colors = ["#B7E4C7", "#FDFFB6", "#D8F3DC", "#FFCAD4", "#457B9D"]
-    sky = sky_colors[(page_number - 1) % len(sky_colors)]
-    ground = ground_colors[(page_number - 1) % len(ground_colors)]
-    star = "#FFE66D" if page_number == 5 else "#FFFFFF"
+STORYBOOK_ILLUSTRATOR_INSTRUCTIONS = """
+You are Illustrator Agent for a children's picture book app.
 
-    return f"""<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="{escaped_visual}">
-  <rect width="1024" height="1024" fill="{sky}"/>
-  <circle cx="820" cy="150" r="80" fill="#FFF3B0" opacity="0.92"/>
-  <path d="M0 690 C180 610 310 710 470 650 C630 590 800 640 1024 570 L1024 1024 L0 1024 Z" fill="{ground}"/>
-  <circle cx="500" cy="505" r="135" fill="#FFFFFF"/>
-  <ellipse cx="420" cy="330" rx="52" ry="150" fill="#FFFFFF" transform="rotate(-20 420 330)"/>
-  <ellipse cx="575" cy="330" rx="52" ry="150" fill="#FFFFFF" transform="rotate(20 575 330)"/>
-  <circle cx="452" cy="485" r="14" fill="#263238"/>
-  <circle cx="548" cy="485" r="14" fill="#263238"/>
-  <circle cx="500" cy="530" r="16" fill="#FF8FAB"/>
-  <path d="M460 568 Q500 604 540 568" fill="none" stroke="#263238" stroke-width="10" stroke-linecap="round"/>
-  <path d="M235 685 Q310 575 390 685 Z" fill="#80ED99" opacity="0.85"/>
-  <path d="M620 690 Q705 565 795 690 Z" fill="#57CC99" opacity="0.85"/>
-  <circle cx="190" cy="180" r="16" fill="{star}" opacity="0.8"/>
-  <circle cx="290" cy="120" r="10" fill="{star}" opacity="0.75"/>
-  <circle cx="710" cy="245" r="12" fill="{star}" opacity="0.7"/>
-  <text x="512" y="78" text-anchor="middle" font-family="Arial, sans-serif" font-size="44" font-weight="700" fill="#1F2937">Page {page_number}</text>
-  <text x="512" y="855" text-anchor="middle" font-family="Arial, sans-serif" font-size="34" font-weight="700" fill="#1F2937">{escaped_theme}</text>
-  <text x="512" y="906" text-anchor="middle" font-family="Arial, sans-serif" font-size="24" fill="#374151">{escaped_visual[:52]}</text>
-  <text x="512" y="950" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" fill="#4B5563">{escaped_text[:64]}</text>
-</svg>
-"""
+Read the story data from Agent State in the user message and create image prompts
+for every page. Return ONLY valid JSON. Do not use markdown fences.
+
+Schema:
+{
+  "pages": [
+    {
+      "page": 1,
+      "image_prompt": "English image generation prompt",
+      "style_notes": "short Korean style note"
+    }
+  ]
+}
+
+Rules:
+- Exactly one image_prompt per story page.
+- Keep the same main characters visually consistent across all pages.
+- Prompts must be in English, vivid, child-safe, and picture-book style.
+- Do not request text, captions, letters, watermarks, logos, or speech bubbles in the image.
+""".strip()
 
 
-def svg_to_data_url(svg: str) -> str:
-    encoded = base64.b64encode(svg.encode("utf-8")).decode("ascii")
-    return f"data:image/svg+xml;base64,{encoded}"
+def extract_json_payload(raw_text: object) -> object:
+    text = str(raw_text or "").strip()
+    if not text:
+        raise ValueError("Empty JSON response")
+
+    fenced = re.fullmatch(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        decoder = json.JSONDecoder()
+        for index, char in enumerate(text):
+            if char not in "{[":
+                continue
+            try:
+                payload, _ = decoder.raw_decode(text[index:])
+                return payload
+            except json.JSONDecodeError:
+                continue
+    raise ValueError("Model response did not contain valid JSON")
+
+
+def normalize_storybook_pages(payload: object, theme: str) -> tuple[str, list[dict[str, object]]]:
+    if isinstance(payload, list):
+        raw_pages = payload
+        title = f"{theme} 이야기"
+    elif isinstance(payload, dict):
+        raw_pages = payload.get("pages")
+        title = str(payload.get("title") or f"{theme} 이야기").strip()
+    else:
+        raise ValueError("Story payload must be a JSON object or list")
+
+    if not isinstance(raw_pages, list) or len(raw_pages) < 5:
+        raise ValueError("Story Writer Agent must return at least 5 pages")
+
+    pages: list[dict[str, object]] = []
+    for index, raw_page in enumerate(raw_pages[:5], start=1):
+        if not isinstance(raw_page, dict):
+            raise ValueError("Each story page must be an object")
+        text = re.sub(r"\s+", " ", str(raw_page.get("text") or "")).strip()
+        visual = re.sub(r"\s+", " ", str(raw_page.get("visual") or "")).strip()
+        if not text:
+            raise ValueError(f"Story page {index} has no text")
+        if not visual or len(visual) < 8:
+            visual = text
+        pages.append({"page": index, "text": text[:360], "visual": visual[:360]})
+
+    return title[:80] or f"{theme} 이야기", pages
+
+
+def normalize_illustration_pages(
+    payload: object,
+    story_pages: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if isinstance(payload, dict):
+        raw_pages = payload.get("pages")
+    else:
+        raw_pages = payload
+
+    raw_by_page: dict[int, dict[str, object]] = {}
+    if isinstance(raw_pages, list):
+        for index, raw_page in enumerate(raw_pages[:5], start=1):
+            if not isinstance(raw_page, dict):
+                continue
+            try:
+                page_number = int(raw_page.get("page") or index)
+            except (TypeError, ValueError):
+                page_number = index
+            raw_by_page[page_number] = raw_page
+
+    normalized: list[dict[str, object]] = []
+    for story_page in story_pages:
+        page_number = int(story_page["page"])
+        raw_page = raw_by_page.get(page_number, {})
+        image_prompt = re.sub(
+            r"\s+",
+            " ",
+            str(raw_page.get("image_prompt") or story_page["visual"]),
+        ).strip()
+        style_notes = re.sub(
+            r"\s+",
+            " ",
+            str(raw_page.get("style_notes") or "따뜻한 그림책 스타일"),
+        ).strip()
+        normalized.append(
+            {
+                "page": page_number,
+                "image_prompt": image_prompt[:900],
+                "style_notes": style_notes[:180],
+            }
+        )
+    return normalized
+
+
+def build_storybook_writer_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
+    return Agent(
+        name="Story Writer Agent",
+        model=build_openai_compatible_model(model, api_key),
+        instructions=STORYBOOK_WRITER_INSTRUCTIONS,
+        model_settings=build_model_settings(thinking_mode),
+    )
+
+
+def build_storybook_illustrator_agent(model: str, api_key: str, thinking_mode: str) -> Agent:
+    return Agent(
+        name="Illustrator Agent",
+        model=build_openai_compatible_model(model, api_key),
+        instructions=STORYBOOK_ILLUSTRATOR_INSTRUCTIONS,
+        model_settings=build_model_settings(thinking_mode),
+    )
+
+
+def run_storybook_json_agent(
+    agent_name: str,
+    instructions: str,
+    prompt: str,
+    model: str,
+    api_key: str,
+    thinking_mode: str,
+) -> tuple[object, str]:
+    if not api_key:
+        raise RuntimeError(f"{agent_name} requires DEEPSEEK_API_KEY")
+
+    append_run_event(f"{agent_name}: DeepSeek 모델 호출")
+    agent = (
+        build_storybook_writer_agent(model, api_key, thinking_mode)
+        if agent_name == "Story Writer Agent"
+        else build_storybook_illustrator_agent(model, api_key, thinking_mode)
+    )
+    result = Runner.run_sync(
+        agent,
+        prompt,
+        session=SQLiteSession(
+            f"storybook-{slugify_storybook_value(agent_name, 'agent')}-{uuid.uuid4().hex}",
+            str(DB_PATH),
+        ),
+        max_turns=4,
+    )
+    return extract_json_payload(result.final_output), "deepseek"
 
 
 def format_storybook_answer(illustrated_pages: list[dict[str, object]]) -> str:
@@ -3837,6 +3955,9 @@ def format_storybook_answer(illustrated_pages: list[dict[str, object]]) -> str:
 
 def run_storybook_agent_sync(
     prompt: str,
+    model: str,
+    api_key: str,
+    thinking_mode: str,
     activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> tuple[str, dict[str, object]]:
     started = time.perf_counter()
@@ -3849,35 +3970,74 @@ def run_storybook_agent_sync(
     try:
         theme = normalize_storybook_theme(prompt)
         append_run_event("Story Writer Agent 실행 시작")
-        story_pages = build_storybook_pages(theme)
+        writer_prompt = (
+            "Theme:\n"
+            f"{theme}\n\n"
+            "Create a new five-page Korean children's story for this exact theme."
+        )
+        writer_payload, writer_provider = run_storybook_json_agent(
+            "Story Writer Agent",
+            STORYBOOK_WRITER_INSTRUCTIONS,
+            writer_prompt,
+            model,
+            api_key,
+            thinking_mode,
+        )
+        title, story_pages = normalize_storybook_pages(writer_payload, theme)
         agent_state: dict[str, object] = {
             "theme": theme,
+            "title": title,
             "story_pages": story_pages,
         }
         append_run_event("Agent State에 `story_pages` 저장")
 
         append_run_event("Illustrator Agent 실행 시작")
+        illustrator_prompt = (
+            "Agent State JSON:\n"
+            f"{json.dumps(agent_state, ensure_ascii=False, indent=2)}\n\n"
+            "Read story_pages from this state and create image prompts for each page."
+        )
+        illustrator_payload, illustrator_provider = run_storybook_json_agent(
+            "Illustrator Agent",
+            STORYBOOK_ILLUSTRATOR_INSTRUCTIONS,
+            illustrator_prompt,
+            model,
+            api_key,
+            thinking_mode,
+        )
+        illustration_pages = normalize_illustration_pages(
+            illustrator_payload,
+            story_pages,
+        )
+        illustration_by_page = {
+            int(page["page"]): page for page in illustration_pages
+        }
+
         illustrated_pages: list[dict[str, object]] = []
         images: list[dict[str, object]] = []
         artifact_store = st.session_state.setdefault("storybook_artifacts", {})
         for page in story_pages:
             page_number = int(page["page"])
+            illustration = illustration_by_page[page_number]
+            image_prompt = str(illustration["image_prompt"])
             filename = (
                 f"storybook_page_{page_number}_"
-                f"{slugify_storybook_value(theme, 'theme')}.svg"
+                f"{slugify_storybook_value(title, 'story')}.png"
             )
-            svg = build_storybook_page_svg(page, theme)
-            data_url = svg_to_data_url(svg)
+            image_result = build_pollinations_image_result(image_prompt)
             artifact_store[filename] = {
-                "mime_type": "image/svg+xml",
-                "data": svg,
+                "mime_type": "image/png",
+                "url": image_result["url"],
                 "page": page_number,
                 "visual": page["visual"],
+                "image_prompt": image_prompt,
             }
             illustrated_page = {
                 "page": page_number,
                 "text": page["text"],
                 "visual": page["visual"],
+                "image_prompt": image_prompt,
+                "style_notes": illustration["style_notes"],
                 "image_artifact": filename,
                 "artifact_version": 0,
             }
@@ -3885,9 +4045,8 @@ def run_storybook_agent_sync(
             images.append(
                 {
                     "page": page_number,
-                    "prompt": page["visual"],
-                    "url": data_url,
-                    "display_url": data_url,
+                    "prompt": image_prompt,
+                    "url": image_result["url"],
                     "artifact": filename,
                 }
             )
@@ -3900,8 +4059,8 @@ def run_storybook_agent_sync(
         answer = format_storybook_answer(illustrated_pages)
         evidence = {
             "agent_mode": AGENT_MODE_STORYBOOK,
-            "model": STORYBOOK_LOCAL_MODEL,
-            "thinking_mode": None,
+            "model": model,
+            "thinking_mode": thinking_mode_label(thinking_mode),
             "total_seconds": time.perf_counter() - started,
             "events": list(run_events),
             "searches": [],
@@ -3909,6 +4068,11 @@ def run_storybook_agent_sync(
             "final_agent": "Illustrator Agent",
             "guardrail": "passed",
             "streaming": False,
+            "providers": {
+                "story_writer": writer_provider,
+                "illustrator": illustrator_provider,
+                "image": "pollinations-image",
+            },
             "images": images,
             "artifacts": [
                 {
@@ -3954,7 +4118,7 @@ def run_hub_agent_sync(
     session: SQLiteSession,
 ) -> tuple[str, dict[str, object]]:
     if agent_mode == AGENT_MODE_STORYBOOK:
-        return run_storybook_agent_sync(prompt)
+        return run_storybook_agent_sync(prompt, model, api_key, thinking_mode)
 
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
@@ -4033,13 +4197,6 @@ async def run_hub_agent_streamed(
     status_placeholder,
     activity_renderer: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> tuple[str, dict[str, object]]:
-    if agent_mode == AGENT_MODE_STORYBOOK:
-        render_status_message(status_placeholder, "Storybook Maker 실행 중...")
-        answer, evidence = run_storybook_agent_sync(prompt, activity_renderer)
-        response_placeholder.markdown(answer)
-        status_placeholder.empty()
-        return answer, evidence
-
     started = time.perf_counter()
     run_events: list[dict[str, object]] = []
     search_timings: list[dict[str, object]] = []
@@ -5436,7 +5593,7 @@ def render_agent_hub() -> None:
             elif mode == AGENT_MODE_RESTAURANT:
                 st.markdown("Triage가 메뉴·주문·예약·불만 담당에게 handoff하고 guardrails가 안전 범위를 확인합니다.")
             else:
-                st.markdown("Story Writer가 5페이지 동화를 만들고 Illustrator가 페이지별 SVG Artifact를 저장합니다.")
+                st.markdown("Story Writer가 새 동화를 쓰고 Illustrator가 페이지별 이미지 Artifact를 저장합니다.")
             if st.button("시작", key=f"hub-start-{mode}", use_container_width=True):
                 set_agent_mode(mode)
                 st.rerun()
@@ -5507,18 +5664,15 @@ def render_hub_agent_sidebar(agent_mode: str) -> None:
             else:
                 st.caption(
                     "Story Writer Agent가 Agent State에 5페이지 story_pages를 저장하고, "
-                    "Illustrator Agent가 그 State를 읽어 페이지별 SVG Artifact를 만듭니다."
+                    "Illustrator Agent가 그 State를 읽어 페이지별 이미지 Artifact를 만듭니다."
                 )
 
         st.divider()
-        if agent_mode == AGENT_MODE_STORYBOOK:
-            st.caption("Storybook Maker는 로컬 SVG Artifact 생성기를 사용합니다.")
-        else:
-            st.caption("공통 응답 설정")
-            render_response_settings_panel(
-                "공통 응답 설정",
-                "모델과 사고 모드는 Life Coach, Movie Agent, Restaurant Bot에 공통 적용됩니다.",
-            )
+        st.caption("공통 응답 설정")
+        render_response_settings_panel(
+            "공통 응답 설정",
+            "모델과 사고 모드는 모든 모델 기반 에이전트에 공통 적용됩니다.",
+        )
 
 
 def render_hub_run_evidence(evidence: dict[str, object]) -> None:
@@ -5544,12 +5698,17 @@ def render_hub_run_evidence(evidence: dict[str, object]) -> None:
     handoffs = evidence.get("handoffs")
     searches = evidence.get("searches")
     events = evidence.get("events")
-    if handoffs or searches or events or artifacts or state_keys:
+    providers = evidence.get("providers")
+    if handoffs or searches or events or artifacts or state_keys or providers:
         with st.expander("상세 실행 정보", expanded=False):
             if handoffs:
                 st.markdown("**Handoff**")
                 for item in handoffs:
                     st.markdown(f"- {item}")
+            if isinstance(providers, dict):
+                st.markdown("**Providers**")
+                for key, value in providers.items():
+                    st.markdown(f"- `{key}`: {value}")
             if artifacts:
                 st.markdown("**Artifacts**")
                 for item in artifacts:
@@ -5592,7 +5751,7 @@ def render_hub_agent_app(agent_mode: str) -> None:
     st.title(AGENT_MODE_LABELS[agent_mode])
     st.caption(agent_mode_caption(agent_mode))
 
-    if not api_key and agent_mode != AGENT_MODE_STORYBOOK:
+    if not api_key:
         st.warning("모델 API 키가 필요합니다. Streamlit Secrets 또는 로컬 환경변수에 키를 넣어 주세요.")
 
     for message in st.session_state[messages_key]:
@@ -5620,46 +5779,74 @@ def render_hub_agent_app(agent_mode: str) -> None:
             activity_placeholder.markdown(format_run_events_markdown(events))
 
         try:
-            answer, evidence = asyncio.run(
-                run_hub_agent_streamed(
-                    agent_mode,
+            if agent_mode == AGENT_MODE_STORYBOOK:
+                render_status_message(status_placeholder, "Storybook Maker 실행 중...")
+                answer, evidence = run_storybook_agent_sync(
                     prompt,
                     model,
                     api_key,
                     thinking_mode,
-                    st.session_state[sdk_session_key],
-                    response_placeholder,
-                    status_placeholder,
                     render_activity,
                 )
-            )
-        except Exception:
-            # 스트리밍이 실패하면(DeepSeek tool/handoff 스트리밍 비호환 등) 동기 실행으로 fallback
-            status_placeholder.empty()
-            with st.spinner("에이전트 실행 중..."):
-                try:
-                    answer, evidence = run_hub_agent_sync(
+                status_placeholder.empty()
+                response_placeholder.markdown(answer)
+            else:
+                answer, evidence = asyncio.run(
+                    run_hub_agent_streamed(
                         agent_mode,
                         prompt,
                         model,
                         api_key,
                         thinking_mode,
                         st.session_state[sdk_session_key],
+                        response_placeholder,
+                        status_placeholder,
+                        render_activity,
                     )
-                except Exception as exc:
-                    answer = (
-                        "응답 생성 중 오류가 발생했어요. API 키, 모델 이름, 네트워크 상태를 확인해 주세요. "
-                        f"오류 유형: `{exc.__class__.__name__}`"
-                    )
-                    evidence = {
-                        "agent_mode": agent_mode,
-                        "model": model,
-                        "final_agent": "Error",
-                        "total_seconds": None,
-                        "events": [],
-                        "handoffs": [],
-                        "searches": [],
-                    }
+                )
+        except Exception as primary_exc:
+            # 스트리밍이 실패하면(DeepSeek tool/handoff 스트리밍 비호환 등) 동기 실행으로 fallback
+            status_placeholder.empty()
+            if agent_mode == AGENT_MODE_STORYBOOK:
+                answer = (
+                    "동화책 생성 중 오류가 발생했어요. API 키, 모델 응답 형식, 네트워크 상태를 확인해 주세요. "
+                    f"오류 유형: `{primary_exc.__class__.__name__}`"
+                )
+                evidence = {
+                    "agent_mode": agent_mode,
+                    "model": model,
+                    "final_agent": "Error",
+                    "total_seconds": None,
+                    "events": [],
+                    "handoffs": ["Story Writer Agent → Illustrator Agent"],
+                    "searches": [],
+                    "artifacts": [],
+                }
+            else:
+                with st.spinner("에이전트 실행 중..."):
+                    try:
+                        answer, evidence = run_hub_agent_sync(
+                            agent_mode,
+                            prompt,
+                            model,
+                            api_key,
+                            thinking_mode,
+                            st.session_state[sdk_session_key],
+                        )
+                    except Exception as exc:
+                        answer = (
+                            "응답 생성 중 오류가 발생했어요. API 키, 모델 이름, 네트워크 상태를 확인해 주세요. "
+                            f"오류 유형: `{exc.__class__.__name__}`"
+                        )
+                        evidence = {
+                            "agent_mode": agent_mode,
+                            "model": model,
+                            "final_agent": "Error",
+                            "total_seconds": None,
+                            "events": [],
+                            "handoffs": [],
+                            "searches": [],
+                        }
         activity_placeholder.empty()
         response_placeholder.markdown(answer)
         render_storybook_artifacts(evidence)
