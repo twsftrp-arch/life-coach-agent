@@ -3260,6 +3260,39 @@ def fetch_image_data_url(url: str) -> str | None:
     return f"data:{content_type};base64,{encoded}"
 
 
+def fetch_image_data_url_with_retries(
+    url: str,
+    attempts: int = 4,
+    delay_seconds: float = 1.25,
+) -> str | None:
+    for attempt in range(attempts):
+        data_url = fetch_image_data_url(url)
+        if data_url:
+            return data_url
+        if attempt < attempts - 1:
+            time.sleep(delay_seconds * (attempt + 1))
+    return None
+
+
+def prepare_storybook_images_for_display(
+    images: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    if not images:
+        return []
+
+    def prepare_one(image: dict[str, object]) -> dict[str, object]:
+        display_image = dict(image)
+        url = str(display_image.get("url") or "")
+        data_url = fetch_image_data_url_with_retries(url)
+        if data_url:
+            display_image["display_url"] = data_url
+            display_image["embedded"] = True
+        return display_image
+
+    with ThreadPoolExecutor(max_workers=min(5, len(images))) as executor:
+        return list(executor.map(prepare_one, images))
+
+
 def prepare_generated_images_for_display(
     images: object,
 ) -> list[dict[str, object]]:
@@ -3990,6 +4023,11 @@ def run_storybook_agent_sync(
                 }
             )
             append_run_event(f"Artifact 저장: {filename}")
+
+        append_run_event("페이지 이미지 5장 로딩 확인 중")
+        images = prepare_storybook_images_for_display(images)
+        embedded_count = sum(1 for image in images if image.get("embedded"))
+        append_run_event(f"페이지 이미지 준비: {embedded_count}/{len(images)}장")
 
         agent_state["illustrated_pages"] = illustrated_pages
         append_run_event("Agent State에 `illustrated_pages` 저장")
