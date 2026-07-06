@@ -3,3 +3,6 @@ openai-agents>=0.6.0
 openai>=2.41.0
 streamlit>=1.42.0
 pypdf>=4.0.0
+google-adk>=2.3.0
+litellm>=1.80.0
+langgraph
