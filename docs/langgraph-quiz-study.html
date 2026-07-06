@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LangGraph Quiz Study Notes</title>
+  <style>
+    :root {
+      --ink: #111827;
+      --muted: #4b5563;
+      --line: #d1d5db;
+      --soft: #f3f4f6;
+      --accent: #2563eb;
+      --accent-soft: #eff6ff;
+    }
+
+    @page {
+      size: A4;
+      margin: 15mm 14mm;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Helvetica Neue", Arial, sans-serif;
+      font-size: 10.8pt;
+      line-height: 1.55;
+      background: white;
+    }
+
+    h1, h2, h3 {
+      margin: 0;
+      letter-spacing: 0;
+      line-height: 1.24;
+    }
+
+    h1 {
+      font-size: 26pt;
+      padding-bottom: 8pt;
+      border-bottom: 2px solid var(--ink);
+    }
+
+    h2 {
+      font-size: 16pt;
+      margin-top: 22pt;
+      padding-bottom: 5pt;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h3 {
+      font-size: 12.6pt;
+      margin-top: 16pt;
+      color: #0f172a;
+    }
+
+    p {
+      margin: 6pt 0 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 9pt;
+      font-size: 9.8pt;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 5pt 6pt;
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--soft);
+      text-align: left;
+      font-weight: 700;
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    pre {
+      margin: 7pt 0 0;
+      padding: 7pt;
+      background: #0f172a;
+      color: #f8fafc;
+      border-radius: 6px;
+      font-size: 8.8pt;
+      overflow: hidden;
+      white-space: pre-wrap;
+    }
+
+    .page {
+      max-width: 780px;
+      margin: 0 auto;
+    }
+
+    .meta {
+      margin-top: 8pt;
+      color: var(--muted);
+      font-size: 9.4pt;
+    }
+
+    .answer {
+      display: inline-block;
+      margin-top: 7pt;
+      padding: 3pt 7pt;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 800;
+    }
+
+    .note {
+      margin-top: 7pt;
+      padding: 8pt 9pt;
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .warn {
+      color: var(--muted);
+    }
+
+    .review {
+      columns: 2;
+      column-gap: 18pt;
+      margin-top: 8pt;
+    }
+
+    .review p {
+      break-inside: avoid;
+      margin: 0 0 5pt;
+    }
+
+    .avoid-break {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <h1>LangGraph Quiz Study Notes</h1>
+    <p class="meta">Source: screenshot quiz reviewed on 2026-07-06</p>
+    <p class="meta">Answer position rule: 1 = top-left, 2 = top-right, 3 = bottom-left, 4 = bottom-right.</p>
+
+    <h2>Quick Answer Key</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Q</th>
+          <th>Answer</th>
+          <th>Core concept</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr><td>1</td><td>1</td><td>LangGraph is flexible building blocks, like clay.</td></tr>
+        <tr><td>2</td><td>2</td><td>Graphs are built from State, Nodes, and Edges.</td></tr>
+        <tr><td>3</td><td>4</td><td>Nodes update state by returning partial updates.</td></tr>
+        <tr><td>4</td><td>3</td><td>Reducers define how a state key is merged or updated.</td></tr>
+        <tr><td>5</td><td>1</td><td>Conditional edges route execution based on state.</td></tr>
+        <tr><td>6</td><td>2</td><td>Command can update state and route to another node together.</td></tr>
+        <tr><td>7</td><td>3</td><td>ToolNode executes tool calls requested by the model.</td></tr>
+        <tr><td>8</td><td>1</td><td>Checkpointers persist state history for memory and time travel.</td></tr>
+        <tr><td>9</td><td>2</td><td>interrupt() pauses for human feedback before continuing.</td></tr>
+        <tr><td>10</td><td>4</td><td>Time travel replays from a previous state snapshot.</td></tr>
+        <tr><td>11</td><td>3</td><td>MessagesState preconfigures messages plus add_messages reducer.</td></tr>
+      </tbody>
+    </table>
+
+    <h2>Core Summary</h2>
+    <p>LangGraph is not a one-click agent mold. It is closer to a small set of composable building blocks. You define the data shape as State, put work into Nodes, and connect the workflow with Edges. Because the structure is explicit, it is useful when an agent needs branching, memory, human review, or a reliable multi-step process.</p>
+    <p>The most important mental model is this: each node reads the current state, does one unit of work, then returns only the values it wants to update. LangGraph merges those updates into the state. If a state field needs special merge behavior, such as appending messages instead of replacing the whole list, a reducer controls that behavior.</p>
+    <p>Checkpointers are what make the graph durable. They save the state across steps, which enables memory, resume, human-in-the-loop flows, and time travel. In practice, this lets you inspect a past state, edit or branch from it, and replay the graph from that point.</p>
+
+    <h2>Question-by-Question Notes</h2>
+
+    <section class="avoid-break">
+      <h3>Q1. How does Nico describe LangGraph compared to other frameworks?</h3>
+      <p class="answer">Correct answer: 1</p>
+      <p><strong>Correct option:</strong> "It's like clay - minimal building blocks that let you shape anything you want"</p>
+      <p class="note">Study note: LangGraph gives you low-level, flexible primitives rather than a fully prebuilt product flow. This means you have more responsibility for designing the graph, but also more control over branching, state, memory, tools, and human review.</p>
+      <p class="warn">Watch out: "template engine", "full-stack framework", and "pre-built mold" all imply a more fixed or complete structure than LangGraph is trying to provide.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q2. What are the three core building blocks of a LangGraph graph?</h3>
+      <p class="answer">Correct answer: 2</p>
+      <p><strong>Correct option:</strong> "State (data), Nodes (where work happens), and Edges (connections between nodes)"</p>
+      <p class="note">Study note: State is the shared data object. Nodes are functions or runnable units that perform work. Edges decide where execution goes next. If you remember only one formula, remember this: graph = State + Nodes + Edges.</p>
+      <p class="warn">Watch out: Models, prompts, tools, chains, and memory can appear inside an application, but they are not the three basic graph primitives.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q3. How does a node update the graph's state in LangGraph?</h3>
+      <p class="answer">Correct answer: 4</p>
+      <p><strong>Correct option:</strong> "By returning the updated values - LangGraph merges them into the state"</p>
+      <p class="note">Study note: A node normally returns a dictionary-like partial update. LangGraph applies that update to the current state. The node does not need to mutate a database or call a special setState API.</p>
+      <pre><code>def classify(state):
+    return {"route": "search"}</code></pre>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q4. What is a reducer function in LangGraph?</h3>
+      <p class="answer">Correct answer: 3</p>
+      <p><strong>Correct option:</strong> "A function that controls how a state key is updated (e.g., append instead of replace)"</p>
+      <p class="note">Study note: By default, a returned value may replace the previous value for that key. A reducer lets a key define custom merge behavior. The classic example is chat messages: new messages should be appended, not overwrite the full message history.</p>
+      <p>Memory hook: reducer = "how to combine old value and new value."</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q5. What do conditional edges let you do?</h3>
+      <p class="answer">Correct answer: 1</p>
+      <p><strong>Correct option:</strong> "Route the graph to different nodes based on state data"</p>
+      <p class="note">Study note: Conditional edges are branching logic. A routing function looks at state and chooses the next node. This is how graphs can choose paths such as answer directly, call a tool, ask a human, or end.</p>
+      <pre><code>def route(state):
+    if state["needs_tool"]:
+        return "tools"
+    return "final"</code></pre>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q6. What does the Command class do in LangGraph?</h3>
+      <p class="answer">Correct answer: 2</p>
+      <p><strong>Correct option:</strong> "It lets a node jump to any other node and update state at the same time."</p>
+      <p class="note">Study note: Command is useful when the node itself needs to decide both what state to change and where to go next. Instead of returning only a state update, it can bundle an update with a goto target.</p>
+      <p>Memory hook: Command = update + goto.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q7. What does the ToolNode do in a LangGraph agent?</h3>
+      <p class="answer">Correct answer: 3</p>
+      <p><strong>Correct option:</strong> "It executes the tool function calls that the AI model requests"</p>
+      <p class="note">Study note: In an agent graph, the model may ask to call a tool. ToolNode is the node that actually runs those requested tool calls and returns tool results back into the message flow.</p>
+      <p class="warn">Watch out: ToolNode does not automatically invent tools, and it is not mainly a UI or permission system. Its core job is execution of requested tool calls.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q8. What are checkpointers used for in LangGraph?</h3>
+      <p class="answer">Correct answer: 1</p>
+      <p><strong>Correct option:</strong> "Persisting state and recording how it changed over time - enabling memory and time travel"</p>
+      <p class="note">Study note: A checkpointer stores graph state at steps in the run. This enables durable conversations, pause/resume, inspection, and replay. Without checkpointing, state is mostly just runtime memory.</p>
+      <p>Memory hook: checkpointer = saved graph timeline.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q9. What does the interrupt() function enable in LangGraph?</h3>
+      <p class="answer">Correct answer: 2</p>
+      <p><strong>Correct option:</strong> "It pauses the graph and waits for human feedback before continuing"</p>
+      <p class="note">Study note: interrupt() supports human-in-the-loop workflows. A graph can pause at a point where human approval, correction, or extra input is needed, then continue later with that input.</p>
+      <p>Common use cases: approval before sending an email, manual review before executing a sensitive action, or asking a user to choose between generated options.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q10. What is "time travel" in LangGraph?</h3>
+      <p class="answer">Correct answer: 4</p>
+      <p><strong>Correct option:</strong> "Going back to a previous state, modifying it, and replaying the graph from that point"</p>
+      <p class="note">Study note: Time travel means using saved checkpoints to revisit an earlier state of the graph. You can inspect what happened, branch from that point, modify state, and replay execution.</p>
+      <p class="warn">Watch out: It is not code version control and not future scheduling. It is graph-state replay.</p>
+    </section>
+
+    <section class="avoid-break">
+      <h3>Q11. What does MessagesState give you as a shortcut?</h3>
+      <p class="answer">Correct answer: 3</p>
+      <p><strong>Correct option:</strong> "A pre-built state class with a messages field and add_messages reducer already set up"</p>
+      <p class="note">Study note: MessagesState is a convenience state shape for chat-style agents. It gives you a messages field and a reducer that appends new messages correctly. This saves you from manually defining the most common chat-message state behavior.</p>
+      <p>Memory hook: MessagesState = ready-made chat messages state.</p>
+    </section>
+
+    <h2>Final Review Sheet</h2>
+    <div class="review">
+      <p><strong>LangGraph basic parts:</strong> State, Nodes, Edges.</p>
+      <p><strong>State update method:</strong> nodes return partial updates.</p>
+      <p><strong>Reducer role:</strong> controls how updates merge into an existing state key.</p>
+      <p><strong>Conditional edge role:</strong> routes to the next node based on state.</p>
+      <p><strong>Command role:</strong> returns state update and next destination together.</p>
+      <p><strong>ToolNode role:</strong> executes tool calls requested by the model.</p>
+      <p><strong>Checkpointer role:</strong> persists state history.</p>
+      <p><strong>interrupt() role:</strong> pauses for human input.</p>
+      <p><strong>Time travel role:</strong> go back to saved state, modify, replay.</p>
+      <p><strong>MessagesState role:</strong> prebuilt messages state with append reducer.</p>
+    </div>
+  </main>
+</body>
+</html>

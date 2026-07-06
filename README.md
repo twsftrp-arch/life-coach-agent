@@ -23,6 +23,7 @@ Streamlit 채팅 UI와 OpenAI Agents SDK를 사용한 개인용 에이전트 허
 - Movie Agent 도구: `get_popular_movies`, `get_movie_details`, `get_movie_credits`
 - Restaurant Bot handoff: `Triage Agent → Menu/Order/Reservation Agent`
 - Storybook Maker: `Story Writer Agent → Illustrator Agent` 흐름으로 Agent State를 공유하고 이미지 Artifact 생성
+- ADK Workflow 과제용 `storybook_workflow`: `SequentialAgent`가 Story Writer → `ParallelAgent` 5개 Illustrator → Assembler 흐름을 실행하고 Callbacks 진행 상태와 Artifact를 생성
 - 검색 질문의 검색 후 답변 스트리밍
 - 검색 없는 대화의 자동 스트리밍
 - OpenAI-compatible provider의 tool-call 호환성 보호를 위한 안정 실행 fallback
@@ -103,6 +104,17 @@ APP_BASE_URL = "http://localhost:8501"
 `.streamlit/secrets.toml`은 커밋하지 마세요.
 
 로컬에 `~/Documents/movie-agent/.env`가 있고 그 안에 `DEEPSEEK_API_KEY`가 있으면 자동으로 재사용합니다. 키 값은 화면에 표시하지 않습니다.
+
+## ADK Workflow Storybook
+
+Workflow Agent 과제용 ADK Web UI는 별도 폴더에서 실행합니다.
+
+```bash
+STORYBOOK_ADK_USE_LLM=0 \
+uv run --python 3.12 --with-requirements requirements.txt adk web storybook_workflow
+```
+
+데모 프롬프트는 [storybook_workflow/demo_prompts.md](storybook_workflow/demo_prompts.md)에 있습니다. 기본값은 모델 키 없이 로컬 Story Writer fallback을 사용하고, `GOOGLE_API_KEY` 또는 `STORYBOOK_ADK_MODEL`을 설정하면 LLM Writer를 사용할 수 있습니다.
 
 ## Streamlit Cloud 배포 예습
 

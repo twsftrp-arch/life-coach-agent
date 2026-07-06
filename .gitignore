@@ -5,6 +5,7 @@ __pycache__/
 .env
 .streamlit/secrets.toml
 .streamlit/*.json
+.adk/
 life_coach_sessions.db
 life_coach_sessions.db-*
 
