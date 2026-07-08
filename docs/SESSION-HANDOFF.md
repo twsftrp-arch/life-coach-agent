@@ -115,3 +115,20 @@ Operational rule:
   - Origin is `https://github.com/twsftrp-arch/life-coach-agent.git`; active GitHub account is currently `trinity-mathslab`, with `twsftrp-arch` configured.
 - Gated actions not performed: no commit, push, deploy, account switch, or secret inspection.
 - Review decision: GO for push approval if 성민님 accepts the current `requirements.txt` dependency set.
+
+---
+
+## LangGraph Submission Repository Decision (2026-07-07)
+
+- Branch: `main`
+- Current local status after user-reported push: clean and synced with `origin/main`.
+- Latest commits:
+  - `937dd6c` — pushed latest commit, contains `.gitignore`, `README.md`, `docs/SESSION-HANDOFF.md`, `docs/langgraph-quiz-study.*`, `push.sh`, and `storybook_workflow/*`.
+  - `5cfa9a2` — contains the core LangGraph submission files: `qna_tutor_agent.ipynb`, `push.sh`, and `requirements.txt`.
+- Review finding:
+  - The existing repo HEAD contains the notebook, but the user-provided commit link `937dd6c` is not the commit that introduced `qna_tutor_agent.ipynb`.
+  - If the assignment expects a fresh repository or a clean repository URL, `life-coach-agent` is noisy because it contains unrelated Streamlit, Supabase, ADK, study-PDF, and handoff content.
+- Recommendation:
+  - Prefer creating a new dedicated repository for the LangGraph demo-day submission and copying only the required assignment files plus a short README.
+  - Keep the existing repo push as a backup/reference; do not force-push or delete history unless 성민님 explicitly requests it.
+- Gated actions not performed: no new repo creation, commit, push, account switch, or destructive cleanup.
