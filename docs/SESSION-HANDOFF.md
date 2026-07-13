@@ -132,3 +132,40 @@ Operational rule:
   - Prefer creating a new dedicated repository for the LangGraph demo-day submission and copying only the required assignment files plus a short README.
   - Keep the existing repo push as a backup/reference; do not force-push or delete history unless 성민님 explicitly requests it.
 - Gated actions not performed: no new repo creation, commit, push, account switch, or destructive cleanup.
+
+---
+
+## MacBook Continuation Sync (2026-07-09)
+
+- Branch: `main`
+- MacBook action performed: `git pull origin main` fast-forwarded from `52788a1` to `07d70e9`.
+- Current synced commit: `07d70e9 docs: record LangGraph submission handoff`.
+- Current status after pull, before this note: clean and synced with `origin/main`.
+- User-provided submission state:
+  - Dedicated LangGraph submission repo completed: `https://github.com/twsftrp-arch/langgraph-qna-tutor-agent`
+- Existing `life-coach-agent` repo should be treated as backup/reference only for this LangGraph submission.
+- Gated actions not performed: no commit, push, deploy, account switch, destructive cleanup, production config, or secret inspection.
+- Next safe step: continue local review/documentation in this repo only if requested; do not perform further external changes without explicit 성민님 GO.
+
+---
+
+## MacBook to iMac LangGraph Continuation (2026-07-13)
+
+- Branch: `main`
+- Current repo role: backup/reference for older Nomad/Personal Agents history. Do not continue the LangGraph Education Agent assignment here unless 성민님 explicitly redirects.
+- Dedicated LangGraph repo:
+  - Local MacBook path: `/Users/sungminkim/Desktop/langgraph-qna-tutor-agent`
+  - Remote: `https://github.com/twsftrp-arch/langgraph-qna-tutor-agent`
+  - Latest remote HEAD before this note: `ef432e7 docs: record education agent push`
+  - Functional implementation commit: `5541b7927acc6ce82a75d334d065ce04dd81f560`
+  - Functional commit link: `https://github.com/twsftrp-arch/langgraph-qna-tutor-agent/commit/5541b7927acc6ce82a75d334d065ce04dd81f560`
+- LangGraph repo state:
+  - Mission required features implemented: 3+ nodes, conditional edge, Tool integration.
+  - Optional features implemented: Send API parallel fan-out, MemorySaver memory, multiple tools.
+  - RAG source is included in repo-local `data/` Markdown/JSON files; no manual source entry is required for submission/demo.
+  - iMac paste-ready prompt is tracked at `docs/IMAC-CONTINUATION-PROMPT.md` inside the dedicated repo.
+- MacBook/iMac operating note:
+  - On iMac, pull or clone `twsftrp-arch/langgraph-qna-tutor-agent`.
+  - Start the next LangGraph/Nomad assignment from that dedicated repo.
+  - Keep this `life-coach-agent` repo as backup/reference only.
+- Gated actions not performed in this note: no deployment, no production config, no secret inspection.
